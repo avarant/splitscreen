@@ -91,7 +91,7 @@ var (
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 // ValidSlug reports whether s is usable as a runner or bundle name. Slugs end
-// up in filesystem paths (/run/clank/<runner>/) and unit names, so they are
+// up in filesystem paths (/run/splitscreen/<runner>/) and unit names, so they are
 // deliberately narrow.
 func ValidSlug(s string) bool { return slugRe.MatchString(s) }
 

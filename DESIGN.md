@@ -1,4 +1,4 @@
-# Clank — Multiplayer Agent Harness
+# Splitscreen — Multiplayer Agent Harness
 
 **Status:** Draft
 **Last updated:** 2026-07-27
@@ -6,6 +6,12 @@
 A self-hostable control plane for running coding agents that teams drive from chat.
 One gateway owns the chat surfaces and every credential; many runners own working
 trees and execute agents.
+
+> **Naming.** Splitscreen is the product: the binary, the config, the protocol.
+> *Clank* is a bot persona a deployment chooses, and is used throughout this
+> document as the running example because it is the name the existing bridges
+> use. A deployment picks its own persona names per runner (§6.1); nothing in
+> the product is called Clank.
 
 ---
 
@@ -311,7 +317,7 @@ Runners hold no forge credentials. A credential helper resolves them per operati
 
 ```
 git push
-  └─▶ credential.helper = clank credential-helper
+  └─▶ credential.helper = splitscreen credential-helper
         └─▶ unix socket ──▶ runner ──▶ gateway
                                         ├─ policy: may this runner touch this repo?
                                         ├─ mint installation token, scoped to that repo
@@ -336,8 +342,8 @@ identities:
 Refactor session store
 
 Co-authored-by: Alice Chen <alice@corp.example>
-Clank-Runner: dev3-react
-Clank-Thread: https://corp.slack.com/archives/C0BK7NB65T4/p1721...
+Splitscreen-Runner: dev3-react
+Splitscreen-Thread: https://corp.slack.com/archives/C0BK7NB65T4/p1721...
 ```
 
 The bot is the committer, the human is attributed, and every commit links back to the
@@ -415,7 +421,7 @@ runner.
 
 **Default: gateway-custodied, runner-ephemeral.** The gateway holds the secret and ships
 it in the bundle on connect. The runner keeps the entire harness config directory on
-tmpfs (`/run/clank/<runner>/config/`, mode 0600). Nothing lands on persistent disk;
+tmpfs (`/run/splitscreen/<runner>/config/`, mode 0600). Nothing lands on persistent disk;
 rotation is a gateway push plus a session drain rather than an SSH session per box.
 
 Stated honestly: tmpfs files and process environments are readable by the same Unix user
@@ -457,7 +463,7 @@ session model later.
 plugins, and user-scope MCP. The unit of isolation is the **runner**, not the machine:
 
 ```
-/run/clank/dev3-react/
+/run/splitscreen/dev3-react/
 ├── config/              ← harness config dir (tmpfs, 0600)
 │   ├── CLAUDE.md
 │   ├── settings.json
@@ -539,8 +545,8 @@ thread directory, never set an execute bit.
 ## 12. Observability
 
 **Slack-first, deliberately.** Slash commands cover most of what a dashboard would:
-`/clank status` (runners, connection state, bundle versions, queue depths), `/clank routes`,
-`/clank cost`. Zero new infrastructure, and the audience is already there.
+`/splitscreen status` (runners, connection state, bundle versions, queue depths), `/splitscreen routes`,
+`/splitscreen cost`. Zero new infrastructure, and the audience is already there.
 
 **Web view second.** Server-rendered HTML embedded in the gateway binary, reached
 initially by port-forwarding (`aws ssm start-session` or equivalent), which makes access
@@ -600,7 +606,7 @@ and user granularity underneath.
 
 ### 13.4 Reporting and control
 
-`/clank cost` by runner, channel, and top threads; a weekly digest; per-runner soft
+`/splitscreen cost` by runner, channel, and top threads; a weekly digest; per-runner soft
 budgets that warn at 80% and require an approver at 100%. That last one is a control the
 current architecture cannot have, because nothing observes spend.
 
@@ -667,7 +673,7 @@ a dependency tree.
 | Store | `modernc.org/sqlite` — pure Go, keeps static builds static |
 | Migrations | Numbered SQL applied at boot; no ORM |
 | Config | YAML, validated at load, atomic reload |
-| CLI | `cobra`: `clank gateway`, `clank runner`, `clank enroll` |
+| CLI | `cobra`: `splitscreen gateway`, `splitscreen runner`, `splitscreen enroll` |
 | Web view (later) | `embed` — ships inside the binary |
 
 **SQLite over Postgres** deliberately: the audit log and routing table should not depend
@@ -679,7 +685,7 @@ generalizes across harnesses, which an in-process SDK callback cannot. Subproces
 becomes the default adapter rather than a compromise.
 
 **Process model.** Gateway: a system service on a dedicated host. Runner: a per-user
-templated service (`clank-runner@<name>`), running as an unprivileged user — harnesses
+templated service (`splitscreen-runner@<name>`), running as an unprivileged user — harnesses
 refuse dangerous permission modes as root, so this constraint persists. Unix sockets, not
 TCP ports, for runner-local IPC: no port allocation, and the current
 `EADDRINUSE`-between-a-systemd-unit-and-a-stray-process failure mode cannot recur.
@@ -691,7 +697,7 @@ change.
 
 Repository: single Go module. `protocol/` and `config/` are exported so third
 parties can write adapters against them; `internal/{gateway,runner}` holds the
-implementations; `cmd/clank` is the one binary.
+implementations; `cmd/splitscreen` is the one binary.
 
 ---
 
@@ -716,9 +722,9 @@ For a cloud deployment where runners are cloud instances:
 Runner config reduces to three non-secret lines:
 
 ```
-CLANK_GATEWAY=wss://10.0.x.x:8443
-CLANK_GATEWAY_FINGERPRINT=sha256:...
-CLANK_RUNNER=dev3-react
+SPLITSCREEN_GATEWAY=wss://10.0.x.x:8443
+SPLITSCREEN_GATEWAY_FINGERPRINT=sha256:...
+SPLITSCREEN_RUNNER=dev3-react
 ```
 
 For non-cloud deployments (laptops, bare metal, other clouds), the same enrollment-token
@@ -744,21 +750,32 @@ cloud-specific.
 
 ## 18. Migration
 
-No big bang. The new gateway is a *new* chat app and coexists with the existing bridges
-indefinitely — the original conflict only ever existed within a single app.
+No big bang, and no flag day. Splitscreen registers a *new* chat app, so it coexists with
+the existing bridges indefinitely — the delivery conflict that motivated this project only
+ever existed within a single app. Existing deployments stay on their current bridge until
+Splitscreen has earned the traffic.
 
-- **Phase 0** — Gateway plus one runner wrapping the existing subprocess logic, pointed at
-  a throwaway channel. Prove parity: streaming, images, file uploads, `!new`, idle-resume.
-- **Phase 1** — Cut one production channel over. Other bridges untouched.
-- **Phase 2** — Migrate remaining runners; retire the extra chat apps and every per-box
-  allowlist.
-- **Phase 3** — Replace hook-based permissions with the permission-prompt tool; delete the
+- **Phase 0** — Protocol and config validator. Small, and everything else keys off it;
+  writing it first forces the runner-identity and bundle questions to be settled
+  concretely rather than deferred. *(Done.)*
+- **Phase 1** — Gateway connection handling and runner registry: hello, auth, route grant,
+  bundle push, heartbeat.
+- **Phase 2** — One runner wrapping the existing subprocess logic, pointed at a throwaway
+  channel. Prove parity against the current bridge: streaming, images, file uploads,
+  `!new`, idle-resume.
+- **Phase 3** — Run alongside a live bridge. A second runner on the same box, its own
+  channel, the same working tree — real traffic, real comparison, no cutover. The existing
+  bridge keeps serving its channels throughout.
+- **Phase 4** — Cut channels over one at a time as confidence accrues. Retire a bridge and
+  its chat app only once nothing routes to it.
+- **Phase 5** — Replace hook-based permissions with the permission-prompt tool; delete the
   hook script and localhost IPC server.
-- **Phase 4** — Second harness adapter; second surface adapter.
+- **Phase 6** — Second harness adapter; second surface adapter.
 
-Build order within Phase 0: the protocol package and its validator first. It is small, it
-is what everything else keys off, and it forces the runner-identity and bundle questions
-to be settled concretely rather than deferred.
+Phase 3 is the point of the whole sequence: two implementations serving comparable traffic
+from the same box, so parity is observed rather than asserted. It is also the phase most
+likely to surface the differences that matter — streaming cadence, permission latency,
+resume behavior — which is why it precedes any cutover.
 
 ---
 
