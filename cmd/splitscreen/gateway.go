@@ -22,7 +22,7 @@ import (
 )
 
 func gatewayCmd() *cobra.Command {
-	var cfgPath, logLevel string
+	var cfgPath, logLevel, webAddr string
 
 	cmd := &cobra.Command{
 		Use:   "gateway",
@@ -97,9 +97,12 @@ delivery bug this architecture exists to eliminate.`,
 				}
 			}()
 
-			errCh := make(chan error, 2)
+			errCh := make(chan error, 3)
 			go func() { errCh <- gw.ServeRunners(ctx) }()
 			go func() { errCh <- gw.Run(ctx) }()
+			if webAddr != "" {
+				go func() { errCh <- gw.ServeWeb(ctx, webAddr) }()
+			}
 
 			log.Info("gateway ready",
 				"runners", len(cfg.Runners), "routes", len(cfg.Routes),
@@ -117,6 +120,8 @@ delivery bug this architecture exists to eliminate.`,
 
 	cmd.Flags().StringVarP(&cfgPath, "config", "c", "splitscreen.yaml", "path to the configuration file")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
+	cmd.Flags().StringVar(&webAddr, "web", "127.0.0.1:8480",
+		"address for the read-only status page; loopback by default, reach it with a port-forward (empty to disable)")
 	return cmd
 }
 

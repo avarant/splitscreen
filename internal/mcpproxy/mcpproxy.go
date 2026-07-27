@@ -115,6 +115,12 @@ type jsonRPCResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// ListTool is the reserved tool name that means "enumerate this server's
+// tools". The protocol carries one MCP frame type so that every call has a
+// single audited path; discovery rides on it under this name and is translated
+// to the proper JSON-RPC method here.
+const ListTool = "tools/list"
+
 // Call invokes a tool. The caller has already resolved and recorded who asked;
 // this function is responsible for the credential and for the server-side deny
 // list.
@@ -125,20 +131,29 @@ func (p *Proxy) Call(ctx context.Context, server, tool string, args json.RawMess
 	if !ok {
 		return nil, fmt.Errorf("mcpproxy: server %q is not configured on the gateway", server)
 	}
-	for _, d := range s.Deny {
-		if matchTool(d, tool) {
-			return nil, fmt.Errorf("mcpproxy: tool %q on %q is denied by gateway policy", tool, server)
+	// Discovery is never denied: hiding a tool's existence while still refusing
+	// to run it produces a much more confusing failure than an honest refusal.
+	if tool != ListTool {
+		for _, d := range s.Deny {
+			if matchTool(d, tool) {
+				return nil, fmt.Errorf("mcpproxy: tool %q on %q is denied by gateway policy", tool, server)
+			}
 		}
 	}
 
-	params := map[string]any{"name": tool}
-	if len(args) > 0 {
-		params["arguments"] = json.RawMessage(args)
+	method := "tools/call"
+	var params any = map[string]any{"name": tool}
+	if tool == ListTool {
+		// Discovery is a distinct JSON-RPC method, not a tool named after one.
+		method = ListTool
+		params = map[string]any{}
+	} else if len(args) > 0 {
+		params.(map[string]any)["arguments"] = json.RawMessage(args)
 	}
 	body, err := json.Marshal(jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      p.seq.Add(1),
-		Method:  "tools/call",
+		Method:  method,
 		Params:  params,
 	})
 	if err != nil {

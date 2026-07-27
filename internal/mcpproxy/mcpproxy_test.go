@@ -147,3 +147,30 @@ func TestHTTPErrorIncludesStatus(t *testing.T) {
 		t.Fatalf("err = %v, want the status included", err)
 	}
 }
+
+// Discovery must issue the JSON-RPC tools/list method, not a tools/call for a
+// tool that happens to be named "tools/list".
+func TestListUsesTheListMethod(t *testing.T) {
+	var gotMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotMethod, _ = body["method"].(string)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"get_issue"}]}}`))
+	}))
+	defer srv.Close()
+
+	p := New()
+	p.Configure([]Server{{Name: "jira", URL: srv.URL, Deny: []string{"*"}}})
+
+	out, err := p.Call(context.Background(), "jira", ListTool, nil)
+	if err != nil {
+		t.Fatalf("discovery was refused: %v", err)
+	}
+	if gotMethod != "tools/list" {
+		t.Fatalf("method = %q, want tools/list", gotMethod)
+	}
+	if !strings.Contains(string(out), "get_issue") {
+		t.Fatalf("result = %s", out)
+	}
+}

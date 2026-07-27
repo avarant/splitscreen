@@ -625,3 +625,46 @@ func TestUnknownUsageIsNotZero(t *testing.T) {
 		t.Errorf("cost report should call out unmetered turns, got:\n%s", text)
 	}
 }
+
+func TestWebStatusPage(t *testing.T) {
+	h := newHarness(t)
+	ws := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, ws)
+
+	// A turn with unmetered usage, so the page has to render the case where a
+	// number is genuinely unknown.
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T1",
+		User: surface.User{ID: "U1"}, Text: "go",
+	})
+	msg := readFrame[*protocol.Message](t, ws)
+	send(t, ws, &protocol.Usage{ThreadID: msg.ThreadID, TurnID: msg.TurnID, Known: false})
+	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: msg.TurnID})
+	eventually(t, "turn recorded", func() bool {
+		rows, err := h.st.CostByRunner(time.Now().Add(-time.Hour))
+		return err == nil && len(rows) == 1
+	})
+
+	rec := httptest.NewRecorder()
+	h.gw.handleIndex(rec, httptest.NewRequest("GET", "/", nil))
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"alpha", "connected", "Cache read", "Unmetered"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page is missing %q", want)
+		}
+	}
+	// The page must say that unmetered work is unmeasured, not free.
+	if !strings.Contains(body, "not free, only unmeasured") {
+		t.Error("the page should explain what an unmetered turn means")
+	}
+
+	rec = httptest.NewRecorder()
+	h.gw.handleIndex(rec, httptest.NewRequest("GET", "/nope", nil))
+	if rec.Code != 404 {
+		t.Errorf("unknown path returned %d", rec.Code)
+	}
+}

@@ -122,6 +122,11 @@ this replaces the per-runner allowlists a single-process bridge needs.
 | `!routes` | The routing table |
 | `!cost` | Spend and token usage for the last week |
 
+A read-only web view is served on loopback (`127.0.0.1:8480` by default). Reach
+it with a port-forward — `aws ssm start-session`, `ssh -L`, or equivalent — so
+authorization stays the platform's problem rather than something this process
+has to invent. Pass `--web ""` to disable it.
+
 Threads are sticky: a thread keeps its runner even after a route changes,
 because its session lives on that runner's disk.
 
@@ -222,10 +227,13 @@ systemctl --user enable --now splitscreen-runner@review   # same host, second tr
 
 ## Status
 
-The protocol, configuration, gateway, runner, Claude Code adapter, and Slack
-surface are implemented and tested. Not yet built: a web dashboard (Slack
-commands cover most of it), per-user OAuth for third-party credentials, and
-additional surface and harness adapters.
+The protocol, configuration, gateway, runner, Claude Code adapter, Slack
+surface, and read-only web view are implemented and tested.
+
+Not yet built: per-user OAuth for third-party credentials (service-account
+tokens work today), signed cloud instance-identity authentication as an
+alternative to enrollment tokens, and additional surface and harness adapters —
+both plug points exist, but only one implementation of each ships.
 
 ## License
 

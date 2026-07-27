@@ -333,6 +333,7 @@ func (r *Runner) sweepIdle(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			r.CleanupThreads()
 			r.sessions.Range(func(key, value any) bool {
 				ts := value.(*threadSession)
 				ts.sessionMu.Lock()

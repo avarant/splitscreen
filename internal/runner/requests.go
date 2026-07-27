@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/avarant/splitscreen/internal/mcpproxy"
 	"github.com/avarant/splitscreen/protocol"
 )
 
@@ -138,15 +139,11 @@ func (r *Runner) callProxiedMCP(ctx context.Context, threadID, server, tool stri
 	}
 }
 
-// listProxiedMCP asks the gateway for a proxied server's tool list.
+// listProxiedMCP asks the gateway for a proxied server's tool list. Discovery
+// rides on the same frame as invocation so that every interaction with a
+// credentialed server has one audited path.
 func (r *Runner) listProxiedMCP(ctx context.Context, threadID, server string) (json.RawMessage, error) {
-	return r.callProxiedMCPRaw(ctx, threadID, server, "tools/list")
-}
-
-func (r *Runner) callProxiedMCPRaw(ctx context.Context, threadID, server, method string) (json.RawMessage, error) {
-	// tools/list is modelled as a call with an empty tool name so the proxy has
-	// exactly one code path to audit.
-	return r.callProxiedMCP(ctx, threadID, server, method, nil)
+	return r.callProxiedMCP(ctx, threadID, server, mcpproxy.ListTool, nil)
 }
 
 // sendFile streams a local file to the surface through the gateway.
