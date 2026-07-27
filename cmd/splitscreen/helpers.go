@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -60,7 +61,7 @@ Wire it up with:
 			}
 			// useHttpPath must be on for this to be populated; without it the
 			// gateway cannot tell which repository is being reached.
-			repo := strings.Trim(strings.TrimSuffix(attrs["path"], ".git"), "/")
+			repo := repoFromPath(attrs["path"])
 			if repo == "" {
 				return fmt.Errorf(
 					"splitscreen: git did not supply a repository path; enable it with `git config credential.useHttpPath true`")
@@ -91,9 +92,17 @@ Wire it up with:
 	return cmd
 }
 
-func readCredentialAttrs(f *os.File) (map[string]string, error) {
+// repoFromPath normalizes git's path attribute into an "owner/name" reference.
+// Git supplies it with or without a leading slash and with or without a .git
+// suffix depending on the remote URL, and the gateway matches policy against
+// the normalized form.
+func repoFromPath(path string) string {
+	return strings.Trim(strings.TrimSuffix(strings.TrimSpace(path), ".git"), "/")
+}
+
+func readCredentialAttrs(r io.Reader) (map[string]string, error) {
 	attrs := map[string]string{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := sc.Text()
 		if line == "" {

@@ -318,17 +318,23 @@ func TestInboundBlobAssembly(t *testing.T) {
 
 	g.reply(ws, &protocol.BlobEnd{BlobID: "b1", OK: true})
 
+	// takeBlob only succeeds once the transfer is complete, so polling it is
+	// also the assertion that an interrupted transfer is never handed over.
 	var path string
+	var data []byte
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, p, ok := r.takeBlob("b1"); ok {
-			path = p
+		if d, p, ok := r.takeBlob("b1"); ok {
+			data, path = d, p
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if path == "" {
 		t.Fatal("the attachment never materialized")
+	}
+	if string(data) != string(payload) {
+		t.Fatalf("inlined content = %q", data)
 	}
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -451,5 +457,26 @@ func TestAdapterSelection(t *testing.T) {
 	}
 	if _, err := harness.Get("claude-code"); err != nil {
 		t.Fatalf("the default adapter is not registered: %v", err)
+	}
+}
+
+// A transfer that never finishes must not be handed to the harness as a
+// truncated file. Silent truncation is worse than a missing attachment.
+func TestIncompleteBlobIsNotHandedOver(t *testing.T) {
+	g := newFakeGateway(t)
+	r, ws := connectedRunner(t, g)
+
+	g.reply(ws, &protocol.BlobBegin{
+		BlobID: "b3", ThreadID: "thread-1", Name: "partial.bin", Size: 1000,
+	})
+	chunk, _ := protocol.EncodeChunk(protocol.ChunkHeader{BlobID: "b3"}, []byte("only the start"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = ws.Write(ctx, websocket.MessageBinary, chunk)
+
+	// No blob.end: the gateway went away mid-transfer.
+	time.Sleep(300 * time.Millisecond)
+	if _, _, ok := r.takeBlob("b3"); ok {
+		t.Fatal("an unfinished transfer was handed over")
 	}
 }

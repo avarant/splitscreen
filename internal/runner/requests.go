@@ -250,6 +250,10 @@ type inboundBlob struct {
 		Sum([]byte) []byte
 	}
 	failed bool
+	// complete is set only once blob.end has arrived and verified. A transfer
+	// interrupted by a gateway restart would otherwise be handed to the harness
+	// as a silently truncated file.
+	complete bool
 }
 
 func (r *Runner) onBlobBegin(fr *protocol.BlobBegin) {
@@ -315,21 +319,25 @@ func (r *Runner) onBlobEnd(fr *protocol.BlobEnd) {
 			return
 		}
 	}
+	b.complete = true
 }
 
 // takeBlob claims a delivered attachment, returning its bytes if it is small
 // enough to inline and always its path.
 func (r *Runner) takeBlob(blobID string) (data []byte, path string, ok bool) {
-	v, loaded := r.blobs.LoadAndDelete(blobID)
+	v, loaded := r.blobs.Load(blobID)
 	if !loaded {
 		return nil, "", false
 	}
 	b := v.(*inboundBlob)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.failed {
+	if b.failed || !b.complete {
+		// Leave it in place: a transfer still in flight will complete, and
+		// consuming the entry here would make it unclaimable afterwards.
 		return nil, "", false
 	}
+	r.blobs.Delete(blobID)
 	// Only inline what is small enough to belong in a prompt; everything else is
 	// handed over as a path.
 	const inlineCap = 5 << 20

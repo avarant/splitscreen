@@ -15,6 +15,22 @@ import (
 // Version is stamped at build time.
 var Version = "dev"
 
+// allCommands is the full subcommand set, in one place so the tree can be
+// asserted rather than trusted.
+func allCommands() []*cobra.Command {
+	return []*cobra.Command{
+		gatewayCmd(),
+		runnerCmd(),
+		enrollCmd(),
+		configCmd(),
+		certCmd(),
+		credentialHelperCmd(),
+		permissionShimCmd(),
+		mcpShimCmd(),
+		sendFileCmd(),
+	}
+}
+
 func main() {
 	root := &cobra.Command{
 		Use:   "splitscreen",
@@ -29,17 +45,7 @@ at rest.`,
 		Version:       Version,
 	}
 
-	root.AddCommand(
-		gatewayCmd(),
-		runnerCmd(),
-		enrollCmd(),
-		configCmd(),
-		certCmd(),
-		credentialHelperCmd(),
-		permissionShimCmd(),
-		mcpShimCmd(),
-		sendFileCmd(),
-	)
+	root.AddCommand(allCommands()...)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
