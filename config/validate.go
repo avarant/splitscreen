@@ -1,0 +1,181 @@
+package config
+
+import (
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/avarant/splitscreen/protocol"
+)
+
+// ValidationError collects every problem in a config rather than stopping at
+// the first. An operator editing routing should see all of it in one pass, not
+// discover the next mistake after each redeploy.
+type ValidationError struct {
+	Problems []string
+}
+
+func (e *ValidationError) Error() string {
+	if len(e.Problems) == 1 {
+		return "config: " + e.Problems[0]
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "config: %d problems:", len(e.Problems))
+	for _, p := range e.Problems {
+		b.WriteString("\n  - ")
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
+type problems struct{ list []string }
+
+func (p *problems) addf(format string, args ...any) {
+	p.list = append(p.list, fmt.Sprintf(format, args...))
+}
+
+// Validate enforces every invariant the gateway relies on at runtime. It is
+// called on load, so a reload either applies wholly or not at all.
+func (c *Config) Validate() error {
+	var p problems
+
+	if len(c.Runners) == 0 {
+		p.addf("no runners are defined")
+	}
+
+	c.validateRunners(&p)
+	c.validateBundles(&p)
+	c.validateRoutes(&p)
+
+	if len(p.list) == 0 {
+		return nil
+	}
+	sort.Strings(p.list)
+	return &ValidationError{Problems: p.list}
+}
+
+func (c *Config) validateRunners(p *problems) {
+	for name, r := range c.Runners {
+		if !protocol.ValidSlug(name) {
+			p.addf("runner %q: name must be a lowercase slug (a-z, 0-9, dashes) — it becomes a filesystem path and a unit name", name)
+		}
+		if r == nil {
+			p.addf("runner %q: empty definition", name)
+			continue
+		}
+		if r.Harness == "" {
+			p.addf("runner %q: harness is required", name)
+		}
+		if r.Cwd == "" {
+			p.addf("runner %q: cwd is required", name)
+		} else if !filepath.IsAbs(r.Cwd) {
+			p.addf("runner %q: cwd %q must be an absolute path", name, r.Cwd)
+		}
+		if r.Idle.Duration() <= 0 {
+			p.addf("runner %q: idle must be positive", name)
+		}
+		if r.Display.Name == "" {
+			p.addf("runner %q: display.name is required — it is what users see on every message", name)
+		}
+		if r.Bundle != "" {
+			if _, ok := c.Bundles[r.Bundle]; !ok {
+				p.addf("runner %q: references unknown bundle %q", name, r.Bundle)
+			}
+		}
+		seenApprover := map[string]bool{}
+		for _, a := range r.Policy.Approvers {
+			if a == "" {
+				p.addf("runner %q: empty approver entry", name)
+				continue
+			}
+			if seenApprover[a] {
+				p.addf("runner %q: duplicate approver %q", name, a)
+			}
+			seenApprover[a] = true
+		}
+		for i, d := range r.Policy.Deny {
+			if strings.TrimSpace(d) == "" {
+				p.addf("runner %q: deny rule %d is empty", name, i)
+			}
+		}
+		for _, repo := range r.Policy.Forge.Repos {
+			if strings.Count(repo, "/") != 1 || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") {
+				p.addf("runner %q: forge repo %q must be in owner/name form", name, repo)
+			}
+		}
+	}
+}
+
+func (c *Config) validateBundles(p *problems) {
+	for name, b := range c.Bundles {
+		if !protocol.ValidSlug(name) {
+			p.addf("bundle %q: name must be a lowercase slug", name)
+		}
+		if b == nil {
+			p.addf("bundle %q: empty definition", name)
+			continue
+		}
+		if b.Extends != "" {
+			if _, ok := c.Bundles[b.Extends]; !ok {
+				p.addf("bundle %q: extends unknown bundle %q", name, b.Extends)
+				continue
+			}
+		}
+		if _, err := c.ResolveBundle(name); err != nil {
+			p.addf("bundle %q: %v", name, strings.TrimPrefix(err.Error(), "config: "))
+		}
+	}
+}
+
+func (c *Config) validateRoutes(p *problems) {
+	claimed := map[string]int{}
+	dmRoutes := 0
+
+	for i, r := range c.Routes {
+		switch {
+		case r.Channel != "" && r.DM:
+			p.addf("route %d: set exactly one of channel or dm, not both", i)
+		case r.Channel == "" && !r.DM:
+			p.addf("route %d: set exactly one of channel or dm", i)
+		}
+
+		if r.Runner == "" {
+			p.addf("route %d: runner is required", i)
+		} else if _, ok := c.Runners[r.Runner]; !ok {
+			p.addf("route %d: references unknown runner %q", i, r.Runner)
+		}
+
+		if r.Channel != "" {
+			// One channel maps to exactly one runner. Without this, Socket Mode
+			// style delivery would make "who answered me" nondeterministic —
+			// the original bug this architecture exists to fix.
+			if prev, dup := claimed[r.Channel]; dup {
+				p.addf("channel %s is claimed by route %d and route %d — a channel maps to exactly one runner", r.Channel, prev, i)
+			} else {
+				claimed[r.Channel] = i
+			}
+		}
+
+		if r.DM {
+			dmRoutes++
+			if dmRoutes > 1 {
+				// There is one bot user, hence one DM conversation per person,
+				// hence at most one DM route.
+				p.addf("route %d: a second dm route is defined — there is only one DM surface to route", i)
+			}
+		}
+	}
+
+	// A runner nothing routes to is usually a typo in a route, so it is worth
+	// naming even though it is not fatal.
+	routed := map[string]bool{}
+	for _, r := range c.Routes {
+		routed[r.Runner] = true
+	}
+	for name := range c.Runners {
+		if !routed[name] {
+			p.addf("runner %q has no routes — it will connect and receive nothing", name)
+		}
+	}
+}

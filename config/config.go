@@ -1,0 +1,189 @@
+// Package config loads and validates the gateway's routing configuration.
+//
+// One YAML file is the source of truth for which runners exist, what they are
+// allowed to do, and which channels route to them. Runners never carry routing
+// or allowlist config: they request an identity and the gateway grants routes.
+package config
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Duration wraps time.Duration so the YAML can say "30m" rather than a
+// nanosecond count.
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
+	var s string
+	if err := node.Decode(&s); err != nil {
+		return fmt.Errorf("expected a duration string like \"30m\": %w", err)
+	}
+	parsed, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+func (d Duration) Duration() time.Duration { return time.Duration(d) }
+func (d Duration) String() string          { return time.Duration(d).String() }
+
+// Config is the whole file.
+type Config struct {
+	Runners map[string]*Runner `yaml:"runners"`
+	Routes  []Route            `yaml:"routes"`
+	Bundles map[string]*Bundle `yaml:"bundles"`
+}
+
+// Display is the per-runner persona. Distinct identities come from
+// chat.postMessage overrides, not from separate chat apps — so personas are
+// cosmetic and a runner cannot be @-mentioned individually.
+type Display struct {
+	Name string `yaml:"name"`
+	Icon string `yaml:"icon"`
+}
+
+type Runner struct {
+	Display Display  `yaml:"display"`
+	Host    string   `yaml:"host"`
+	Cwd     string   `yaml:"cwd"`
+	Harness string   `yaml:"harness"`
+	Bundle  string   `yaml:"bundle"`
+	Idle    Duration `yaml:"idle"`
+	Policy  Policy   `yaml:"policy"`
+}
+
+type Policy struct {
+	// Approvers may resolve permission prompts. Distinct from who may talk to
+	// the runner.
+	Approvers []string `yaml:"approvers"`
+	// Deny is evaluated gateway-side before any prompt is posted, so it cannot
+	// be overridden by clicking Allow.
+	Deny  []string    `yaml:"deny"`
+	Forge ForgePolicy `yaml:"forge"`
+}
+
+type ForgePolicy struct {
+	// Repos bounds which repositories the gateway will mint credentials for,
+	// in "owner/name" form.
+	Repos []string `yaml:"repos"`
+}
+
+// Route binds a channel (or the DM surface) to exactly one runner.
+type Route struct {
+	Channel string `yaml:"channel"`
+	DM      bool   `yaml:"dm"`
+	Runner  string `yaml:"runner"`
+}
+
+// Bundle is the harness configuration materialized onto a runner. Contents are
+// interpreted by the harness adapter, not by the gateway: memory files and
+// skills mean something to a Claude Code adapter and something else, or
+// nothing, to another.
+type Bundle struct {
+	Extends string   `yaml:"extends"`
+	Memory  []string `yaml:"memory"`
+	Skills  []string `yaml:"skills"`
+	Plugins []string `yaml:"plugins"`
+	MCP     []string `yaml:"mcp"`
+}
+
+// DefaultIdle applies when a runner does not set one.
+const DefaultIdle = 30 * time.Minute
+
+// Load reads and fully validates a config file. It returns either a usable
+// config or an error listing every problem found — never a partially applied
+// one. Callers implement reload by swapping the returned pointer only on
+// success, so a bad edit leaves the running config untouched.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(raw)
+}
+
+// Parse is Load over an in-memory document.
+func Parse(raw []byte) (*Config, error) {
+	var c Config
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true) // a typo'd key is an error, not a silently ignored line
+	if err := dec.Decode(&c); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	c.applyDefaults()
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (c *Config) applyDefaults() {
+	for _, r := range c.Runners {
+		if r.Idle == 0 {
+			r.Idle = Duration(DefaultIdle)
+		}
+	}
+}
+
+// RunnerFor resolves an inbound message to a runner name. Unrouted channels
+// return false and are ignored — this replaces per-runner channel allowlists.
+func (c *Config) RunnerFor(channel string, isDM bool) (string, bool) {
+	for _, r := range c.Routes {
+		if isDM && r.DM {
+			return r.Runner, true
+		}
+		if !isDM && r.Channel != "" && r.Channel == channel {
+			return r.Runner, true
+		}
+	}
+	return "", false
+}
+
+// ResolvedBundle is a bundle with its inheritance chain flattened.
+type ResolvedBundle struct {
+	Name    string
+	Memory  []string
+	Skills  []string
+	Plugins []string
+	MCP     []string
+}
+
+// ResolveBundle flattens an extends chain, base first. Later layers append to
+// earlier ones, so an org base contributes shared rules and a runner overlay
+// adds its own without restating them.
+//
+// An explicitly empty list in a child (plugins: []) still yields an empty
+// result only if the base contributed nothing; suppression is deliberately not
+// supported, because "why did my base rule vanish" is a worse failure mode than
+// "why is this list longer than I expected".
+func (c *Config) ResolveBundle(name string) (*ResolvedBundle, error) {
+	seen := map[string]bool{}
+	var chain []*Bundle
+	for cur := name; cur != ""; {
+		if seen[cur] {
+			return nil, fmt.Errorf("config: bundle %q has a circular extends chain", name)
+		}
+		seen[cur] = true
+		b, ok := c.Bundles[cur]
+		if !ok {
+			return nil, fmt.Errorf("config: bundle %q not found", cur)
+		}
+		chain = append([]*Bundle{b}, chain...) // prepend: base ends up first
+		cur = b.Extends
+	}
+	out := &ResolvedBundle{Name: name}
+	for _, b := range chain {
+		out.Memory = append(out.Memory, b.Memory...)
+		out.Skills = append(out.Skills, b.Skills...)
+		out.Plugins = append(out.Plugins, b.Plugins...)
+		out.MCP = append(out.MCP, b.MCP...)
+	}
+	return out, nil
+}

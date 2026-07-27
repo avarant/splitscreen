@@ -1,0 +1,11 @@
+# Build artifacts
+/splitscreen
+/dist/
+
+# Local config that may carry secrets
+*.local.yaml
+.env
+
+# Go
+*.test
+*.out
