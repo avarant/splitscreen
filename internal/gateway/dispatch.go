@@ -1,0 +1,518 @@
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/avarant/splitscreen/internal/pricing"
+	"github.com/avarant/splitscreen/internal/store"
+	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/avarant/splitscreen/protocol"
+)
+
+// dispatch routes one decoded frame from a runner.
+func (g *Gateway) dispatch(ctx context.Context, c *Conn, f protocol.Frame) {
+	switch fr := f.(type) {
+	case *protocol.Pong:
+		// lastSeen already updated by the read loop.
+	case *protocol.Ping:
+		_ = c.Send(&protocol.Pong{Nonce: fr.Nonce})
+	case *protocol.TextDelta:
+		g.onTextDelta(fr)
+	case *protocol.ToolStart:
+		g.onToolStart(fr)
+	case *protocol.ToolEnd:
+		g.onToolEnd(fr)
+	case *protocol.PermissionRequest:
+		g.onPermissionRequest(ctx, c, fr)
+	case *protocol.MCPCall:
+		go g.onMCPCall(ctx, c, fr)
+	case *protocol.CredentialRequest:
+		go g.onCredentialRequest(ctx, c, fr)
+	case *protocol.Usage:
+		g.onUsage(c, fr)
+	case *protocol.Done:
+		g.onDone(ctx, c, fr)
+	case *protocol.Error:
+		g.onRunnerError(ctx, c, fr)
+	case *protocol.BlobBegin:
+		g.onBlobBegin(c, fr)
+	case *protocol.BlobEnd:
+		g.onBlobEnd(ctx, c, fr)
+	default:
+		g.log.Warn("unhandled frame", "runner", c.runner, "type", f.Type())
+	}
+}
+
+func (g *Gateway) turnFor(turnID string) (*turnContext, bool) {
+	v, ok := g.turns.Load(turnID)
+	if !ok {
+		return nil, false
+	}
+	return v.(*turnContext), true
+}
+
+func (g *Gateway) onTextDelta(fr *protocol.TextDelta) {
+	turn, ok := g.turnFor(fr.TurnID)
+	if !ok {
+		return
+	}
+	g.streamFor(turn).AppendText(fr.Text)
+}
+
+func (g *Gateway) onToolStart(fr *protocol.ToolStart) {
+	turn, ok := g.turnFor(fr.TurnID)
+	if !ok {
+		return
+	}
+	if err := g.store.IncrementToolCalls(fr.TurnID); err != nil {
+		g.log.Warn("tool count update failed", "turn", fr.TurnID, "err", err)
+	}
+	label := fr.Tool
+	if fr.Summary != "" {
+		label += ": " + truncateLine(fr.Summary, 120)
+	}
+	g.streamFor(turn).AppendActivity(label)
+	_ = g.store.Log(store.Event{
+		Kind: "tool.start", Runner: turn.Runner, ThreadID: turn.ThreadID,
+		TurnID: fr.TurnID, SurfaceUser: turn.User.ID,
+		Detail: map[string]any{"tool": fr.Tool, "call": fr.CallID, "summary": fr.Summary},
+	})
+}
+
+func (g *Gateway) onToolEnd(fr *protocol.ToolEnd) {
+	turn, ok := g.turnFor(fr.TurnID)
+	if !ok {
+		return
+	}
+	if !fr.OK {
+		g.streamFor(turn).AppendActivity("failed: " + truncateLine(fr.Error, 160))
+	}
+	_ = g.store.Log(store.Event{
+		Kind: "tool.end", Runner: turn.Runner, ThreadID: turn.ThreadID,
+		TurnID: fr.TurnID,
+		Detail: map[string]any{"call": fr.CallID, "ok": fr.OK, "error": fr.Error, "duration_ms": fr.DurationMS},
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Permissions
+// ---------------------------------------------------------------------------
+
+type pendingPrompt struct {
+	RequestID string
+	Runner    string
+	Turn      *turnContext
+	Ref       surface.Ref
+	Tool      string
+	CreatedAt time.Time
+}
+
+func (g *Gateway) onPermissionRequest(ctx context.Context, c *Conn, fr *protocol.PermissionRequest) {
+	turn, ok := g.turnFor(fr.TurnID)
+	if !ok {
+		// Without a turn there is nowhere to ask, and defaulting to allow would
+		// be exactly the wrong failure direction.
+		_ = c.Send(&protocol.PermissionResponse{
+			RequestID: fr.RequestID, Decision: protocol.DecisionDeny,
+			PolicyDenied: true, Reason: "no live turn for this request",
+		})
+		return
+	}
+
+	if err := g.store.RecordPermissionRequest(fr.RequestID, turn.ThreadID, fr.TurnID,
+		c.runner, fr.Tool, string(fr.Input)); err != nil {
+		g.log.Error("record permission request failed", "err", err)
+	}
+
+	rc, _ := g.runnerConfig(c.runner)
+
+	// Policy is evaluated before the prompt is posted. A denied tool is never
+	// offered to a human, so no click can approve it.
+	if rc != nil {
+		if rule, denied := MatchDeny(rc.Policy.Deny, fr.Tool, fr.Input); denied {
+			reason := "denied by gateway policy: " + rule
+			_ = c.Send(&protocol.PermissionResponse{
+				RequestID: fr.RequestID, Decision: protocol.DecisionDeny,
+				PolicyDenied: true, Reason: reason,
+			})
+			_ = g.store.RecordPermissionDecision(fr.RequestID, string(protocol.DecisionDeny), "", reason, true)
+			_ = g.store.Log(store.Event{
+				Kind: "permission.policy_denied", Runner: c.runner, ThreadID: turn.ThreadID,
+				TurnID: fr.TurnID, Detail: map[string]any{"tool": fr.Tool, "rule": rule},
+			})
+			g.streamFor(turn).AppendActivity("blocked by policy: " + fr.Tool + " (" + rule + ")")
+			return
+		}
+	}
+
+	srf, ok := g.surfaceFor(turn.Surface)
+	if !ok {
+		_ = c.Send(&protocol.PermissionResponse{
+			RequestID: fr.RequestID, Decision: protocol.DecisionDeny,
+			PolicyDenied: true, Reason: "surface unavailable",
+		})
+		return
+	}
+
+	// Flush pending output first so the prompt lands after the text explaining
+	// why it is being asked for.
+	g.streamFor(turn).flush(ctx)
+
+	ref, err := srf.Prompt(ctx, surface.Prompt{
+		Channel:   turn.Channel,
+		Thread:    turn.Thread,
+		Persona:   turn.Persona,
+		RequestID: fr.RequestID,
+		Tool:      fr.Tool,
+		Summary:   fr.Summary,
+		Detail:    SummarizeInput(fr.Input),
+	})
+	if err != nil {
+		g.log.Error("permission prompt failed", "err", err)
+		_ = c.Send(&protocol.PermissionResponse{
+			RequestID: fr.RequestID, Decision: protocol.DecisionDeny,
+			PolicyDenied: true, Reason: "could not post prompt: " + err.Error(),
+		})
+		return
+	}
+
+	g.prompts.Store(fr.RequestID, &pendingPrompt{
+		RequestID: fr.RequestID, Runner: c.runner, Turn: turn,
+		Ref: ref, Tool: fr.Tool, CreatedAt: time.Now(),
+	})
+}
+
+// OnDecision handles a human resolving a permission prompt.
+func (g *Gateway) OnDecision(ctx context.Context, d surface.Decision) {
+	v, ok := g.prompts.Load(d.RequestID)
+	if !ok {
+		return // already resolved, or from a previous gateway process
+	}
+	p := v.(*pendingPrompt)
+
+	rc, _ := g.runnerConfig(p.Runner)
+	if !approverAllowed(rc, d.User.ID) {
+		srf, ok := g.surfaceFor(p.Turn.Surface)
+		if ok {
+			_, _ = srf.Post(ctx, surface.Post{
+				Channel: p.Turn.Channel, Thread: p.Turn.Thread,
+				Text:      "You are not an approver for `" + p.Runner + "`.",
+				Ephemeral: true, User: d.User.ID,
+			})
+		}
+		_ = g.store.Log(store.Event{
+			Kind: "permission.unauthorized", Runner: p.Runner, ThreadID: p.Turn.ThreadID,
+			SurfaceUser: d.User.ID, Detail: map[string]any{"request": d.RequestID},
+		})
+		return
+	}
+
+	// Claim the prompt before acting so two fast clicks cannot both resolve it.
+	if _, loaded := g.prompts.LoadAndDelete(d.RequestID); !loaded {
+		return
+	}
+
+	who := d.User.Display
+	if who == "" {
+		who = d.User.ID
+	}
+	if err := g.store.RecordPermissionDecision(d.RequestID, string(d.Decision), d.User.ID, "", false); err != nil {
+		g.log.Error("record decision failed", "err", err)
+	}
+	_ = g.store.Log(store.Event{
+		Kind: "permission.decided", Runner: p.Runner, ThreadID: p.Turn.ThreadID,
+		TurnID: p.Turn.TurnID, SurfaceUser: d.User.ID,
+		Detail: map[string]any{"request": d.RequestID, "tool": p.Tool, "decision": string(d.Decision)},
+	})
+
+	conn, online := g.hub.Get(p.Runner)
+	if online {
+		if err := conn.Send(&protocol.PermissionResponse{
+			RequestID: d.RequestID,
+			Decision:  d.Decision,
+			DecidedBy: &protocol.UserRef{ID: d.User.ID, Display: d.User.Display},
+		}); err != nil {
+			g.log.Error("permission response send failed", "err", err)
+		}
+	}
+
+	if srf, ok := g.surfaceFor(p.Turn.Surface); ok {
+		text := fmt.Sprintf("`%s` — *%s* by <@%s>", p.Tool, d.Decision, d.User.ID)
+		if !online {
+			text += " _(runner disconnected before the decision reached it)_"
+		}
+		if err := srf.Resolve(ctx, p.Ref, text); err != nil {
+			g.log.Warn("resolve prompt failed", "err", err)
+		}
+	}
+}
+
+// failPendingFor resolves outstanding prompts when a runner drops. Leaving live
+// buttons for a connection that no longer exists invites a click that silently
+// does nothing.
+func (g *Gateway) failPendingFor(runner string) {
+	ctx := context.Background()
+	g.prompts.Range(func(key, value any) bool {
+		p := value.(*pendingPrompt)
+		if p.Runner != runner {
+			return true
+		}
+		g.prompts.Delete(key)
+		_ = g.store.RecordPermissionDecision(p.RequestID, string(protocol.DecisionDeny), "",
+			"runner disconnected before a decision", true)
+		if srf, ok := g.surfaceFor(p.Turn.Surface); ok {
+			_ = srf.Resolve(ctx, p.Ref, fmt.Sprintf("`%s` — cancelled: `%s` disconnected", p.Tool, runner))
+		}
+		return true
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Proxied MCP
+// ---------------------------------------------------------------------------
+
+func (g *Gateway) onMCPCall(ctx context.Context, c *Conn, fr *protocol.MCPCall) {
+	started := time.Now()
+	turn, _ := g.turnFor(fr.TurnID)
+
+	rec := store.MCPRecord{
+		CallID: fr.CallID, Runner: c.runner, TurnID: fr.TurnID,
+		Server: fr.Server, Tool: fr.Tool, Args: string(fr.Args),
+	}
+	if turn != nil {
+		rec.ThreadID = turn.ThreadID
+		rec.SurfaceUser = turn.User.ID
+	}
+
+	respond := func(result json.RawMessage, err error) {
+		rec.DurationMS = time.Since(started).Milliseconds()
+		rec.OK = err == nil
+		if err != nil {
+			rec.Error = err.Error()
+		}
+		if rerr := g.store.RecordMCPCall(rec); rerr != nil {
+			g.log.Error("record mcp call failed", "err", rerr)
+		}
+		resp := &protocol.MCPResponse{CallID: fr.CallID}
+		if err != nil {
+			resp.Error = &protocol.RemoteError{Code: "mcp_error", Message: err.Error()}
+		} else {
+			if len(result) == 0 {
+				result = json.RawMessage(`{}`)
+			}
+			resp.Result = result
+		}
+		if serr := c.Send(resp); serr != nil {
+			g.log.Error("mcp response send failed", "err", serr)
+		}
+	}
+
+	if !g.proxy.Has(fr.Server) {
+		respond(nil, fmt.Errorf("server %q is not proxied by this gateway", fr.Server))
+		return
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	result, err := g.proxy.Call(callCtx, fr.Server, fr.Tool, fr.Args)
+	respond(result, err)
+}
+
+// ---------------------------------------------------------------------------
+// Forge credentials
+// ---------------------------------------------------------------------------
+
+func (g *Gateway) onCredentialRequest(ctx context.Context, c *Conn, fr *protocol.CredentialRequest) {
+	turn, _ := g.turnFor(fr.TurnID)
+	rec := store.CredentialRecord{
+		RequestID: fr.RequestID, Runner: c.runner,
+		Kind: string(fr.Kind), Resource: fr.Resource, TurnID: fr.TurnID,
+	}
+	if turn != nil {
+		rec.ThreadID = turn.ThreadID
+		rec.SurfaceUser = turn.User.ID
+	}
+
+	deny := func(reason string) {
+		rec.Granted = false
+		rec.Reason = reason
+		if err := g.store.RecordCredential(rec); err != nil {
+			g.log.Error("record credential failed", "err", err)
+		}
+		g.log.Warn("credential denied", "runner", c.runner, "resource", fr.Resource, "reason", reason)
+		_ = c.Send(&protocol.CredentialGrant{
+			RequestID: fr.RequestID, Kind: fr.Kind, Denied: true, Reason: reason,
+		})
+	}
+
+	if fr.Kind != protocol.CredentialForge {
+		deny("only forge credentials are minted on request")
+		return
+	}
+
+	rc, ok := g.runnerConfig(c.runner)
+	if !ok {
+		deny("runner is not configured")
+		return
+	}
+	// Policy is checked before capability: a repository outside the allowlist is
+	// refused for that reason whether or not a provider happens to be
+	// configured, and the answer does not depend on gateway internals.
+	if !RepoAllowed(rc.Policy.Forge.Repos, fr.Resource) {
+		// An empty allowlist denies everything: a runner with no declared
+		// repositories has no business minting git credentials.
+		deny(fmt.Sprintf("repository %q is outside this runner's forge policy", fr.Resource))
+		return
+	}
+	if g.forge == nil {
+		deny("no forge provider is configured on the gateway")
+		return
+	}
+
+	mintCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cred, err := g.forge.Mint(mintCtx, fr.Resource)
+	if err != nil {
+		deny("mint failed: " + err.Error())
+		return
+	}
+
+	rec.Granted = true
+	if !cred.ExpiresAt.IsZero() {
+		exp := cred.ExpiresAt
+		rec.ExpiresAt = &exp
+	}
+	if err := g.store.RecordCredential(rec); err != nil {
+		g.log.Error("record credential failed", "err", err)
+	}
+
+	grant := &protocol.CredentialGrant{
+		RequestID: fr.RequestID,
+		Kind:      fr.Kind,
+		Username:  cred.Username,
+		Value:     cred.Token,
+	}
+	if !cred.ExpiresAt.IsZero() {
+		exp := cred.ExpiresAt
+		grant.ExpiresAt = &exp
+	}
+	if err := c.Send(grant); err != nil {
+		g.log.Error("credential grant send failed", "err", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Accounting and completion
+// ---------------------------------------------------------------------------
+
+func (g *Gateway) onUsage(c *Conn, fr *protocol.Usage) {
+	u := store.Usage{
+		Model:            fr.Model,
+		InputTokens:      fr.InputTokens,
+		CacheWriteTokens: fr.CacheWriteTokens,
+		CacheReadTokens:  fr.CacheReadTokens,
+		OutputTokens:     fr.OutputTokens,
+		TTLHint:          fr.TTLHint,
+		Known:            fr.Known,
+		ReportedUSD:      fr.ProviderCostUSD,
+	}
+
+	// Subscription runners have no marginal dollar cost; pricing them would
+	// invent a number. Their scarce resource is the rate-limit window, which the
+	// token counters already capture.
+	rc, _ := g.runnerConfig(c.runner)
+	billsInDollars := rc == nil || rc.Billing != "subscription"
+
+	if fr.Known && billsInDollars {
+		if cost, ok := g.prices.Cost(fr.Model, pricing.Counters{
+			Input:      fr.InputTokens,
+			CacheWrite: fr.CacheWriteTokens,
+			CacheRead:  fr.CacheReadTokens,
+			Output:     fr.OutputTokens,
+			TTLHint:    fr.TTLHint,
+		}); ok {
+			u.ComputedUSD = &cost
+			u.PriceTableVer = g.prices.Version
+		} else {
+			g.log.Warn("no price for model; turn left unpriced", "model", fr.Model, "turn", fr.TurnID)
+		}
+	}
+
+	if err := g.store.RecordUsage(fr.TurnID, u); err != nil {
+		g.log.Error("record usage failed", "turn", fr.TurnID, "err", err)
+	}
+}
+
+func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
+	turn, ok := g.turnFor(fr.TurnID)
+	if !ok {
+		return
+	}
+	defer g.turns.Delete(fr.TurnID)
+
+	if v, loaded := g.streams.Load(fr.TurnID); loaded {
+		s := v.(*stream)
+		s.Close(ctx)
+		if !s.HasOutput() {
+			if srf, ok := g.surfaceFor(turn.Surface); ok {
+				_, _ = srf.Post(ctx, surface.Post{
+					Channel: turn.Channel, Thread: turn.Thread,
+					Text: "_(no output)_", Persona: turn.Persona,
+				})
+			}
+		}
+	}
+
+	if fr.SessionID != "" {
+		if err := g.store.SetThreadSession(turn.ThreadID, fr.SessionID); err != nil {
+			g.log.Error("set session failed", "thread", turn.ThreadID, "err", err)
+		}
+	}
+	duration := fr.DurationMS
+	if duration == 0 {
+		duration = time.Since(turn.StartedAt).Milliseconds()
+	}
+	if err := g.store.FinishTurn(fr.TurnID, store.TurnDone, "", duration, fr.NumToolCalls); err != nil {
+		g.log.Error("finish turn failed", "turn", fr.TurnID, "err", err)
+	}
+	_ = g.store.TouchThread(turn.ThreadID)
+}
+
+func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error) {
+	g.log.Error("runner error", "runner", c.runner, "code", fr.Code, "message", fr.Message, "fatal", fr.Fatal)
+	_ = g.store.Log(store.Event{
+		Kind: "runner.error", Runner: c.runner, TurnID: fr.TurnID,
+		Detail: map[string]any{"code": fr.Code, "message": fr.Message, "fatal": fr.Fatal},
+	})
+
+	if turn, ok := g.turnFor(fr.TurnID); ok {
+		if v, loaded := g.streams.Load(fr.TurnID); loaded {
+			v.(*stream).Close(ctx)
+		}
+		if srf, ok := g.surfaceFor(turn.Surface); ok {
+			_, _ = srf.Post(ctx, surface.Post{
+				Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona,
+				Text: fmt.Sprintf(":warning: `%s` — %s", fr.Code, truncateLine(fr.Message, 500)),
+			})
+		}
+		_ = g.store.FinishTurn(fr.TurnID, store.TurnError, fr.Code+": "+fr.Message,
+			time.Since(turn.StartedAt).Milliseconds(), 0)
+		g.turns.Delete(fr.TurnID)
+	}
+
+	if fr.Fatal {
+		c.CloseWith("fatal error reported by runner: " + fr.Code)
+	}
+}
+
+func truncateLine(s string, n int) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}

@@ -1,0 +1,129 @@
+# Splitscreen gateway configuration.
+#
+# This file is the source of truth for which runners exist, what they may do,
+# and which channels route to them. Runners carry none of it: they request an
+# identity and the gateway grants routes.
+#
+# Validate before deploying:  splitscreen config check -c splitscreen.yaml
+
+gateway:
+  # Bind to a private address. Nothing on the public internet should be able to
+  # open this socket; the chat connection is outbound-only, so the gateway needs
+  # no public inbound at all.
+  listen: 10.0.0.5:8443
+
+  tls:
+    cert: /etc/splitscreen/gateway.crt
+    key:  /etc/splitscreen/gateway.key
+
+  # SQLite. Losing it costs the audit log and routing state, not any live
+  # session — those live on the runners.
+  store: /var/lib/splitscreen/splitscreen.db
+
+  # One file per secret, mode 0600, directory not group- or world-readable.
+  # Layered over SPLITSCREEN_SECRET_* environment variables.
+  secrets_dir: /etc/splitscreen/secrets
+
+  slack:
+    bot_token_secret: slack-bot     # xoxb-…
+    app_token_secret: slack-app     # xapp-… with connections:write
+
+  forge:
+    kind: github-app
+    app_id: "3361466"
+    installation_id: "123535694"
+    key_file: /etc/splitscreen/github-app.pem
+
+  # Every runner shares one chat app, and therefore one rate-limit bucket.
+  # Streaming edits are coalesced at this interval rather than per token.
+  stream_interval: 700ms
+  heartbeat: 20s
+  queue_limit: 100
+  secret_expiry_warning: 336h        # warn 14 days before a token expires
+
+# ---------------------------------------------------------------------------
+
+runners:
+  staging:
+    display: { name: "Clank", icon: ":robot_face:" }
+    host:    i-06141ec8f53774665
+    cwd:     /var/www/app
+    harness: claude-code
+    bundle:  staging
+    idle:    30m
+    billing: subscription            # no marginal dollar cost; consumes the
+                                     # rate-limit window instead
+    policy:
+      approvers: [U01ABC123, U02DEF456]
+      deny:
+        - "Bash(git push --force*)"
+        - "Bash(terraform apply*)"
+        - "Bash(rm -rf /*)"
+      forge:
+        # An empty list denies every repository.
+        repos: ["acme/app"]
+
+  review:
+    display: { name: "Clank Review", icon: ":mag:" }
+    cwd:     /var/www/app-review
+    harness: claude-code
+    bundle:  review
+    # A smaller box reclaims memory sooner. This is a cost lever too: killing a
+    # session forces the next turn to re-create the prompt cache.
+    idle:    10m
+    billing: api-key
+    harness_secret: anthropic-key
+    harness_env:    ANTHROPIC_API_KEY
+    policy:
+      deny: ["Bash(git push*)"]      # review runner reads; it does not publish
+      forge:
+        repos: ["acme/app"]
+
+# ---------------------------------------------------------------------------
+
+# One channel maps to exactly one runner. Unlisted channels are ignored.
+routes:
+  - { channel: C0123456789, runner: staging }
+  - { channel: C0987654321, runner: review }
+  - { dm: true,             runner: staging }
+
+# ---------------------------------------------------------------------------
+
+# Bundles are the harness configuration the gateway materializes onto a runner.
+# They compose: a base layer contributes shared rules, an overlay adds its own.
+bundles:
+  base:
+    memory: [org/conventions.md]
+    skills: [org/deploy-check]
+
+  staging:
+    extends: base
+    memory:  [runners/staging.md]
+    mcp:     [fs, jira]
+
+  review:
+    extends: base
+    memory:  [runners/review.md]
+    plugins: []                      # deliberately none
+    mcp:     [fs]
+
+# ---------------------------------------------------------------------------
+
+# Does it need the runner's filesystem, or does it need a credential?
+#   filesystem -> local, runs on the runner
+#   credential -> proxied, runs through the gateway
+mcp:
+  fs:
+    kind: local
+    command: /usr/local/bin/mcp-filesystem
+    args: ["--root", "/var/www/app"]
+
+  jira:
+    kind: proxied
+    url:  https://mcp.atlassian.com/v1/sse
+    auth: basic                      # email:token, as Atlassian API tokens work
+    user: clank@example.com
+    secret: jira-token               # resolved on the gateway, never shipped
+    # Enforced at the gateway, before the call leaves it. No agent decision and
+    # no button click can reach these.
+    deny: ["deleteIssue", "admin_*"]

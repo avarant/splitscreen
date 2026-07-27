@@ -44,9 +44,11 @@ func (c *Config) Validate() error {
 		p.addf("no runners are defined")
 	}
 
+	c.validateGateway(&p)
 	c.validateRunners(&p)
 	c.validateBundles(&p)
 	c.validateRoutes(&p)
+	c.validateMCP(&p)
 
 	if len(p.list) == 0 {
 		return nil

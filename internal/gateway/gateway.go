@@ -1,0 +1,269 @@
+// Package gateway is the control plane: it owns the chat surfaces, every
+// credential, the routing table, and the audit log. Runners own working trees
+// and execute agents; they hold nothing secret at rest.
+package gateway
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/avarant/splitscreen/config"
+	"github.com/avarant/splitscreen/internal/forge"
+	"github.com/avarant/splitscreen/internal/mcpproxy"
+	"github.com/avarant/splitscreen/internal/pricing"
+	"github.com/avarant/splitscreen/internal/secrets"
+	"github.com/avarant/splitscreen/internal/store"
+	"github.com/avarant/splitscreen/internal/surface"
+)
+
+// Gateway is the singleton control plane.
+//
+// Exactly one may run against a given chat app: two connections to one app
+// means the platform delivers each payload to one of them at random, which is
+// the delivery bug this whole architecture exists to eliminate.
+type Gateway struct {
+	cfgPath string
+	cfg     atomic.Pointer[config.Config]
+
+	store   *store.Store
+	secrets secrets.Backend
+	prices  *pricing.Table
+	proxy   *mcpproxy.Proxy
+	forge   forge.Provider
+	log     *slog.Logger
+
+	surfaces map[string]surface.Surface
+	hub      *Hub
+
+	streams sync.Map // turn id -> *stream
+	prompts sync.Map // permission request id -> *pendingPrompt
+	turns   sync.Map // turn id -> *turnContext
+
+	bundlesMu sync.Mutex
+	bundles   map[string]bundleState // runner -> last pushed bundle
+}
+
+// Options configures a gateway.
+type Options struct {
+	ConfigPath string
+	Config     *config.Config
+	Store      *store.Store
+	Secrets    secrets.Backend
+	Prices     *pricing.Table
+	Forge      forge.Provider
+	Surfaces   map[string]surface.Surface
+	Logger     *slog.Logger
+}
+
+// New builds a gateway. It does not connect anything; call Run.
+func New(o Options) (*Gateway, error) {
+	if o.Config == nil {
+		return nil, errors.New("gateway: config is required")
+	}
+	if o.Store == nil {
+		return nil, errors.New("gateway: store is required")
+	}
+	if o.Secrets == nil {
+		o.Secrets = secrets.NewEnvBackend()
+	}
+	if o.Logger == nil {
+		o.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	}
+	if o.Prices == nil {
+		o.Prices = DefaultPriceTable()
+	}
+	if err := o.Prices.Validate(); err != nil {
+		return nil, err
+	}
+
+	g := &Gateway{
+		cfgPath:  o.ConfigPath,
+		store:    o.Store,
+		secrets:  o.Secrets,
+		prices:   o.Prices,
+		proxy:    mcpproxy.New(),
+		forge:    o.Forge,
+		log:      o.Logger,
+		surfaces: o.Surfaces,
+		hub:      NewHub(),
+		bundles:  map[string]bundleState{},
+	}
+	if g.surfaces == nil {
+		g.surfaces = map[string]surface.Surface{}
+	}
+	g.applyConfig(o.Config)
+	return g, nil
+}
+
+// Config returns the live configuration.
+func (g *Gateway) Config() *config.Config { return g.cfg.Load() }
+
+// applyConfig swaps in a validated config and reconfigures derived state.
+func (g *Gateway) applyConfig(c *config.Config) {
+	g.cfg.Store(c)
+
+	var servers []mcpproxy.Server
+	for name, s := range c.MCP {
+		if s == nil || s.Kind != config.MCPProxied {
+			continue
+		}
+		srv := mcpproxy.Server{
+			Name: name,
+			URL:  s.URL,
+			Auth: mcpproxy.AuthKind(s.Auth),
+			User: s.User,
+			Deny: s.Deny,
+		}
+		if s.Secret != "" {
+			sec, err := g.secrets.Get(s.Secret)
+			if err != nil {
+				// A proxied server whose credential is missing is registered
+				// without one so calls fail loudly at the boundary rather than
+				// the server silently disappearing from the roster.
+				g.log.Error("mcp secret unavailable", "server", name, "secret", s.Secret, "err", err)
+			} else {
+				srv.Secret = sec.Value
+			}
+		}
+		servers = append(servers, srv)
+	}
+	g.proxy.Configure(servers)
+}
+
+// Reload re-reads the config file. On any validation problem the running config
+// is left untouched: a bad edit must never partially apply.
+func (g *Gateway) Reload() error {
+	if g.cfgPath == "" {
+		return errors.New("gateway: no config path to reload from")
+	}
+	c, err := config.Load(g.cfgPath)
+	if err != nil {
+		return err
+	}
+	old := g.cfg.Load()
+	g.applyConfig(c)
+	g.log.Info("config reloaded", "runners", len(c.Runners), "routes", len(c.Routes))
+
+	// Runners whose bundle changed get a push; their live sessions are marked
+	// stale so the change is announced rather than discovered.
+	for name := range c.Runners {
+		if conn, ok := g.hub.Get(name); ok {
+			if err := g.pushBundle(context.Background(), conn); err != nil {
+				g.log.Error("bundle push after reload failed", "runner", name, "err", err)
+			}
+		}
+	}
+	if old != nil {
+		for name := range old.Runners {
+			if _, still := c.Runners[name]; !still {
+				if conn, ok := g.hub.Get(name); ok {
+					g.log.Warn("runner removed from config; closing", "runner", name)
+					conn.CloseWith("runner removed from configuration")
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// Run starts every surface and blocks until ctx is cancelled. The runner-facing
+// listener is started separately by ServeRunners.
+func (g *Gateway) Run(ctx context.Context) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(g.surfaces)+1)
+
+	for name, s := range g.surfaces {
+		wg.Add(1)
+		go func(name string, s surface.Surface) {
+			defer wg.Done()
+			g.log.Info("surface starting", "surface", name)
+			if err := s.Start(ctx, g); err != nil && ctx.Err() == nil {
+				errCh <- fmt.Errorf("surface %s: %w", name, err)
+			}
+		}(name, s)
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		g.watchSecretExpiry(ctx)
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		wg.Wait()
+		return nil
+	}
+}
+
+// surfaceFor returns the adapter for a surface name.
+func (g *Gateway) surfaceFor(name string) (surface.Surface, bool) {
+	s, ok := g.surfaces[name]
+	return s, ok
+}
+
+// runnerConfig looks up a runner definition.
+func (g *Gateway) runnerConfig(name string) (*config.Runner, bool) {
+	c := g.cfg.Load()
+	r, ok := c.Runners[name]
+	return r, ok
+}
+
+func personaFor(r *config.Runner) surface.Persona {
+	if r == nil {
+		return surface.Persona{}
+	}
+	return surface.Persona{Name: r.Display.Name, Icon: r.Display.Icon}
+}
+
+// watchSecretExpiry warns ahead of a mandatory credential rotation, turning a
+// future outage into a calendar item.
+func (g *Gateway) watchSecretExpiry(ctx context.Context) {
+	check := func() {
+		c := g.cfg.Load()
+		window := c.Gateway.SecretExpiryWarning.Duration()
+		for _, s := range secrets.Expiring(g.secrets, window, time.Now()) {
+			g.log.Warn("secret expiring", "secret", s.Name, "expires_at", s.ExpiresAt)
+			_ = g.store.Log(store.Event{
+				Kind:   "secret.expiring",
+				Detail: map[string]any{"secret": s.Name, "expires_at": s.ExpiresAt},
+			})
+		}
+	}
+	check()
+	t := time.NewTicker(6 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			check()
+		}
+	}
+}
+
+// DefaultPriceTable is a starting point, not an authority. Rates change;
+// version it and correct it rather than trusting the harness's own figure.
+func DefaultPriceTable() *pricing.Table {
+	std := pricing.Rates{
+		Input: 15, Output: 75,
+		CacheWriteMult: 1.25, CacheReadMult: 0.1, CacheWriteMult1h: 2.0,
+	}
+	return &pricing.Table{
+		Version: "unset-defaults",
+		Rates: map[string]pricing.Rates{
+			"claude-opus":   std,
+			"claude-sonnet": {Input: 3, Output: 15, CacheWriteMult: 1.25, CacheReadMult: 0.1, CacheWriteMult1h: 2.0},
+			"claude-haiku":  {Input: 1, Output: 5, CacheWriteMult: 1.25, CacheReadMult: 0.1, CacheWriteMult1h: 2.0},
+		},
+	}
+}

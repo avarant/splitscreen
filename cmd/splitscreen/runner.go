@@ -1,0 +1,110 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/avarant/splitscreen/internal/harness"
+	"github.com/avarant/splitscreen/internal/runner"
+)
+
+func runnerCmd() *cobra.Command {
+	var (
+		name        string
+		gatewayURL  string
+		token       string
+		tokenFile   string
+		fingerprint string
+		insecure    bool
+		cwd         string
+		harnessName string
+		runtimeRoot string
+		idle        time.Duration
+		logLevel    string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "runner",
+		Short: "Run an agent-side daemon",
+		Long: `Runs one working tree under one harness.
+
+The runner dials out to the gateway — it never listens for it — so it works from
+a private subnet, behind NAT, or on a laptop with no inbound rules. It holds no
+chat credentials, no forge credentials, and no routing configuration.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			log := newLogger(logLevel)
+
+			// Prefer a file or the environment over a flag: a token in argv is
+			// visible in the process table to every user on the box.
+			if token == "" && tokenFile != "" {
+				raw, err := os.ReadFile(tokenFile)
+				if err != nil {
+					return fmt.Errorf("runner: read token file: %w", err)
+				}
+				token = strings.TrimSpace(string(raw))
+			}
+			if token == "" {
+				token = os.Getenv("SPLITSCREEN_TOKEN")
+			}
+			if token == "" {
+				return errors.New("runner: no enrollment token (use --token-file or SPLITSCREEN_TOKEN)")
+			}
+			if cwd == "" {
+				return errors.New("runner: --cwd is required; it is the working tree the agent operates on")
+			}
+			if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+				return fmt.Errorf("runner: --cwd %q is not a directory", cwd)
+			}
+
+			r, err := runner.New(runner.Options{
+				Name:        name,
+				Gateway:     gatewayURL,
+				Token:       token,
+				Fingerprint: fingerprint,
+				Insecure:    insecure,
+				Cwd:         cwd,
+				HarnessName: harnessName,
+				RuntimeRoot: runtimeRoot,
+				IdleTimeout: idle,
+				Logger:      log,
+			})
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			log.Info("runner starting",
+				"name", name, "gateway", gatewayURL, "cwd", cwd,
+				"harness", harnessName, "idle", idle)
+			return r.Run(ctx)
+		},
+	}
+
+	f := cmd.Flags()
+	f.StringVar(&name, "name", os.Getenv("SPLITSCREEN_RUNNER"), "runner name, as declared in the gateway config")
+	f.StringVar(&gatewayURL, "gateway", os.Getenv("SPLITSCREEN_GATEWAY"), "gateway URL, e.g. wss://10.0.0.5:8443")
+	f.StringVar(&token, "token", "", "enrollment token (prefer --token-file)")
+	f.StringVar(&tokenFile, "token-file", "", "file containing the enrollment token")
+	f.StringVar(&fingerprint, "fingerprint", os.Getenv("SPLITSCREEN_GATEWAY_FINGERPRINT"),
+		"pinned sha256 fingerprint of the gateway certificate")
+	f.BoolVar(&insecure, "insecure", false, "skip TLS verification (development only)")
+	f.StringVar(&cwd, "cwd", "", "working tree the agent operates on")
+	f.StringVar(&harnessName, "harness", "claude-code",
+		fmt.Sprintf("harness adapter (available: %s)", strings.Join(harness.Names(), ", ")))
+	f.StringVar(&runtimeRoot, "runtime-root", "", "runtime directory; should be tmpfs (default /run/splitscreen)")
+	f.DurationVar(&idle, "idle", 30*time.Minute, "kill a session after this much silence; it resumes on the next message")
+	f.StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
+
+	_ = cmd.MarkFlagRequired("name")
+	return cmd
+}

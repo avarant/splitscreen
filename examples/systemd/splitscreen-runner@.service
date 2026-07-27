@@ -1,0 +1,31 @@
+# A templated *user* unit: one instance per runner, so a single host can serve
+# several working trees. Harnesses refuse dangerous permission modes when run as
+# root, so this must not be a system unit.
+#
+#   systemctl --user enable --now splitscreen-runner@staging
+#   loginctl enable-linger $USER
+[Unit]
+Description=Splitscreen runner (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/splitscreen/%i.env
+ExecStart=/usr/local/bin/splitscreen runner \
+  --name %i \
+  --gateway ${SPLITSCREEN_GATEWAY} \
+  --fingerprint ${SPLITSCREEN_GATEWAY_FINGERPRINT} \
+  --token-file %h/.config/splitscreen/%i.token \
+  --cwd ${SPLITSCREEN_CWD} \
+  --idle ${SPLITSCREEN_IDLE}
+Restart=always
+RestartSec=5
+
+# The runtime root should be tmpfs: the materialized bundle and the harness
+# credential belong in memory, not on persistent disk.
+RuntimeDirectory=splitscreen
+Environment=XDG_RUNTIME_DIR=%t
+
+[Install]
+WantedBy=default.target

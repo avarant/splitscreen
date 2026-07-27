@@ -1,0 +1,34 @@
+# The gateway runs as a system service on a dedicated host. It never spawns a
+# harness, so the unprivileged-user constraint that applies to runners does not
+# apply here; a system unit is simpler and more robust than user-plus-linger.
+[Unit]
+Description=Splitscreen gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=splitscreen
+Group=splitscreen
+ExecStart=/usr/local/bin/splitscreen gateway -c /etc/splitscreen/splitscreen.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# The gateway holds every credential and the full audit log. Give it as little
+# of the host as it can work with.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/splitscreen
+StateDirectory=splitscreen
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

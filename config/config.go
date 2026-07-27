@@ -36,9 +36,11 @@ func (d Duration) String() string          { return time.Duration(d).String() }
 
 // Config is the whole file.
 type Config struct {
-	Runners map[string]*Runner `yaml:"runners"`
-	Routes  []Route            `yaml:"routes"`
-	Bundles map[string]*Bundle `yaml:"bundles"`
+	Gateway Gateway               `yaml:"gateway"`
+	Runners map[string]*Runner    `yaml:"runners"`
+	Routes  []Route               `yaml:"routes"`
+	Bundles map[string]*Bundle    `yaml:"bundles"`
+	MCP     map[string]*MCPServer `yaml:"mcp"`
 }
 
 // Display is the per-runner persona. Distinct identities come from
@@ -57,7 +59,35 @@ type Runner struct {
 	Bundle  string   `yaml:"bundle"`
 	Idle    Duration `yaml:"idle"`
 	Policy  Policy   `yaml:"policy"`
+
+	// TokenSecret names the enrollment secret this runner authenticates with.
+	// Defaults to "runner-<name>".
+	TokenSecret string `yaml:"token_secret"`
+	// HarnessSecret names the credential shipped to the runner and materialized
+	// to tmpfs. Empty means the runner authenticates by some other means —
+	// cloud IAM, for instance — and the gateway ships nothing.
+	HarnessSecret string `yaml:"harness_secret"`
+	// HarnessEnv is the environment variable the harness credential is injected
+	// as. Adapters supply a sensible default.
+	HarnessEnv string `yaml:"harness_env"`
+	// Billing is "api-key" or "subscription". Subscription runners have no
+	// marginal dollar cost; the scarce resource is the rate-limit window, so
+	// cost reports render them differently rather than as $0.
+	Billing string `yaml:"billing"`
 }
+
+// EffectiveTokenSecret is the enrollment secret name for a runner.
+func (r *Runner) EffectiveTokenSecret(name string) string {
+	if r.TokenSecret != "" {
+		return r.TokenSecret
+	}
+	return "runner-" + name
+}
+
+const (
+	BillingAPIKey       = "api-key"
+	BillingSubscription = "subscription"
+)
 
 type Policy struct {
 	// Approvers may resolve permission prompts. Distinct from who may talk to
@@ -118,6 +148,7 @@ func Parse(raw []byte) (*Config, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	c.applyDefaults()
+	c.applyGatewayDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}

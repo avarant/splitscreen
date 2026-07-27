@@ -37,7 +37,19 @@ bundles:
   dev3-react:
     extends: base
     memory: [runners/dev3-react.md]
-    mcp: [github]
+    mcp: [github, jira]
+
+mcp:
+  github:
+    kind: local
+    command: /usr/bin/mcp-github
+  jira:
+    kind: proxied
+    url: https://mcp.example.com/v1
+    auth: basic
+    user: bot@example.com
+    secret: jira-token
+    deny: ["deleteIssue"]
 
 routes:
   - channel: C0BK7NB65T4
@@ -315,5 +327,121 @@ routes:
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("missing problem %q in:\n%s", want, err)
 		}
+	}
+}
+
+func TestMCPValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "credentialed server declared as local",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+mcp:
+  jira: { kind: local, command: /bin/x, secret: jira-token }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: "must not declare url or secret",
+		},
+		{
+			name: "proxied server declaring a command",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+mcp:
+  jira: { kind: proxied, url: https://x, command: /bin/x }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: "the runner never executes them",
+		},
+		{
+			name: "basic auth without a user",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+mcp:
+  jira: { kind: proxied, url: https://x, auth: basic, secret: s }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: "basic auth requires user and secret",
+		},
+		{
+			name: "bundle referencing an undeclared server",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h, bundle: b }
+bundles:
+  b: { mcp: [ghost] }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: `unknown mcp server "ghost"`,
+		},
+		{
+			name: "incomplete github app forge",
+			src: `
+gateway:
+  forge: { kind: github-app, app_id: "123" }
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: "requires app_id, installation_id, and key_file",
+		},
+		{
+			name: "half-configured tls",
+			src: `
+gateway:
+  tls: { cert: /etc/cert.pem }
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: "cert and key must be set together",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.src))
+			if err == nil {
+				t.Fatal("expected rejection")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestSecretRefsAndDefaults(t *testing.T) {
+	c, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Gateway.Listen != DefaultListen {
+		t.Errorf("listen = %q, want default", c.Gateway.Listen)
+	}
+	// A runner with no explicit token_secret still has a resolvable name, so
+	// startup can verify every secret exists before serving traffic.
+	refs := map[string]bool{}
+	for _, r := range c.SecretRefs() {
+		refs[r] = true
+	}
+	for _, want := range []string{"runner-staging", "runner-dev3-react", "jira-token"} {
+		if !refs[want] {
+			t.Errorf("SecretRefs missing %q (got %v)", want, c.SecretRefs())
+		}
+	}
+	if got := c.ProxiedServers(); len(got) != 1 || got[0] != "jira" {
+		t.Errorf("ProxiedServers = %v, want [jira]", got)
 	}
 }
