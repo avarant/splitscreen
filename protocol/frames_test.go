@@ -300,3 +300,20 @@ func TestVersionNegotiation(t *testing.T) {
 		t.Error("malformed version was accepted")
 	}
 }
+
+// A permission request without a known turn must still be sendable: the gateway
+// denies what it cannot place, which is strictly better than a request the
+// runner cannot transmit while a harness waits for an answer.
+func TestPermissionRequestWithoutTurnIsValid(t *testing.T) {
+	req := &PermissionRequest{RequestID: "r1", Tool: "Bash"}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("rejected: %v", err)
+	}
+	raw, err := Encode(req)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, err := Decode(raw, DirUp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}

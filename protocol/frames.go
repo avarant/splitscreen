@@ -407,9 +407,10 @@ func (p *PermissionRequest) Validate() error {
 	if p.Tool == "" {
 		errs = append(errs, errors.New("permission.request: tool is required"))
 	}
-	if p.TurnID == "" {
-		errs = append(errs, errors.New("permission.request: turn is required"))
-	}
+	// TurnID is deliberately optional. A runner that cannot identify the turn
+	// must still be able to ask: the gateway denies a request it cannot place,
+	// which is a far better outcome than a request that cannot be sent at all
+	// and leaves the harness waiting on a decision nobody will ever make.
 	return errors.Join(errs...)
 }
 
