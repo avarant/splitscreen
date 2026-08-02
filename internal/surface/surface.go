@@ -104,6 +104,40 @@ type Upload struct {
 	Size    int64
 }
 
+// Membership is what a surface knows about the bot's access to a channel.
+//
+// Unknown is a distinct state on purpose. A surface that lacks the scope to
+// answer must not report "not joined", because that would paint a healthy
+// deployment red and teach operators to ignore the check.
+type Membership int
+
+const (
+	MembershipUnknown Membership = iota
+	MembershipJoined
+	MembershipNotJoined
+)
+
+func (m Membership) String() string {
+	switch m {
+	case MembershipJoined:
+		return "joined"
+	case MembershipNotJoined:
+		return "not joined"
+	default:
+		return "unknown"
+	}
+}
+
+// ChannelInfo is what a surface can report about a routed channel.
+type ChannelInfo struct {
+	ID         string
+	Name       string
+	Membership Membership
+	// Detail explains an Unknown result — a missing scope, usually — so the
+	// operator can act on it rather than wonder.
+	Detail string
+}
+
 // Surface is a chat platform adapter.
 type Surface interface {
 	// Name identifies the adapter ("slack"). Used in thread keys and audit rows.
@@ -122,6 +156,10 @@ type Surface interface {
 	Resolve(ctx context.Context, ref Ref, text string) error
 	// Upload sends a file.
 	Upload(ctx context.Context, u Upload) error
+	// Channel reports what the surface knows about a channel, so a route the
+	// bot cannot actually receive from can be surfaced as a problem. Silence is
+	// otherwise indistinguishable from having no route at all.
+	Channel(ctx context.Context, id string) (ChannelInfo, error)
 	// Close releases the connection.
 	Close() error
 }

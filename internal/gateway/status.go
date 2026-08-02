@@ -57,6 +57,18 @@ func (g *Gateway) StatusText() string {
 		b.WriteString("\n")
 	}
 
+	if bad := g.UnreachableChannels(); len(bad) > 0 {
+		b.WriteString("\n:warning: *Routed but not joined*\n")
+		for _, st := range bad {
+			name := st.Info.Name
+			if name == "" {
+				name = st.Info.ID
+			}
+			fmt.Fprintf(&b, "• #%s → `%s` — %s\n", name, st.Runner, st.Info.Detail)
+		}
+		b.WriteString("_Messages in these channels never reach the gateway._\n")
+	}
+
 	if servers := g.proxy.Names(); len(servers) > 0 {
 		sort.Strings(servers)
 		b.WriteString("\n*Proxied MCP*: " + strings.Join(servers, ", ") + "\n")
@@ -79,9 +91,9 @@ func (g *Gateway) RoutesText() string {
 		return b.String()
 	}
 	for _, r := range cfg.Routes {
-		target := "<#" + r.Channel + ">"
-		if r.DM {
-			target = "direct messages"
+		target := "direct messages"
+		if !r.DM {
+			target = g.channelLabel(r.Channel)
 		}
 		b.WriteString(fmt.Sprintf("• %s → `%s`\n", target, r.Runner))
 	}

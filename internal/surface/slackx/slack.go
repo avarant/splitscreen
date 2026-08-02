@@ -320,6 +320,45 @@ func (s *Surface) Upload(ctx context.Context, u surface.Upload) error {
 	return nil
 }
 
+// Channel reports membership for a routed channel.
+//
+// Slack only delivers message events for conversations the bot has joined, so a
+// perfectly-routed channel nobody invited the bot into behaves exactly like an
+// unrouted one. This is how that becomes visible.
+func (s *Surface) Channel(ctx context.Context, id string) (surface.ChannelInfo, error) {
+	info := surface.ChannelInfo{ID: id, Membership: surface.MembershipUnknown}
+
+	ch, err := s.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+		ChannelID: id,
+	})
+	if err != nil {
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "missing_scope"):
+			// Report the gap rather than guessing. Without channels:read (and
+			// groups:read for private channels) we simply cannot tell.
+			info.Detail = "needs the channels:read scope (groups:read for private channels)"
+		case strings.Contains(msg, "channel_not_found"):
+			// Slack returns this both for a bad id and for a private channel the
+			// bot cannot see, and the two are worth distinguishing by hand.
+			info.Membership = surface.MembershipNotJoined
+			info.Detail = "channel not found, or private and not joined"
+		default:
+			info.Detail = msg
+		}
+		return info, nil
+	}
+
+	info.Name = ch.Name
+	if ch.IsMember {
+		info.Membership = surface.MembershipJoined
+	} else {
+		info.Membership = surface.MembershipNotJoined
+		info.Detail = "invite the bot into the channel"
+	}
+	return info, nil
+}
+
 func (s *Surface) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

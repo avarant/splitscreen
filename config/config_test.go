@@ -238,17 +238,6 @@ routes:
 			want: "must be a lowercase slug",
 		},
 		{
-			name: "unrouted runner",
-			src: `
-runners:
-  a: { display: {name: A}, cwd: /a, harness: h }
-  orphan: { display: {name: O}, cwd: /o, harness: h }
-routes:
-  - { channel: C1, runner: a }
-`,
-			want: `runner "orphan" has no routes`,
-		},
-		{
 			name: "malformed forge repo",
 			src: `
 runners:
@@ -443,5 +432,35 @@ func TestSecretRefsAndDefaults(t *testing.T) {
 	}
 	if got := c.ProxiedServers(); len(got) != 1 || got[0] != "jira" {
 		t.Errorf("ProxiedServers = %v, want [jira]", got)
+	}
+}
+
+// A runner with no routes is a warning, not an error. It is also the state a
+// config passes through while a route is being removed, so blocking on it would
+// make that edit impossible without a simultaneous runner deletion.
+func TestUnroutedRunnerIsAWarning(t *testing.T) {
+	src := `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+  orphan: { display: {name: O}, cwd: /o, harness: h }
+routes:
+  - { channel: C1, runner: a }
+`
+	c, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("an unrouted runner blocked loading: %v", err)
+	}
+	if len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], "orphan") {
+		t.Fatalf("warnings = %v, want one naming orphan", c.Warnings)
+	}
+}
+
+func TestValidConfigHasNoWarnings(t *testing.T) {
+	c, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", c.Warnings)
 	}
 }

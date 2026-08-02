@@ -29,10 +29,23 @@ func (e *ValidationError) Error() string {
 	return b.String()
 }
 
-type problems struct{ list []string }
+// problems separates the two kinds of finding a config can have.
+//
+// An error means the config cannot work and must not be applied. A warning
+// means it probably is not what someone meant, but it runs — and blocking on
+// those makes legitimate intermediate states impossible to reach, such as
+// removing a runner's last route before removing the runner.
+type problems struct {
+	list  []string
+	warns []string
+}
 
 func (p *problems) addf(format string, args ...any) {
 	p.list = append(p.list, fmt.Sprintf(format, args...))
+}
+
+func (p *problems) warnf(format string, args ...any) {
+	p.warns = append(p.warns, fmt.Sprintf(format, args...))
 }
 
 // Validate enforces every invariant the gateway relies on at runtime. It is
@@ -49,6 +62,9 @@ func (c *Config) Validate() error {
 	c.validateBundles(&p)
 	c.validateRoutes(&p)
 	c.validateMCP(&p)
+
+	sort.Strings(p.warns)
+	c.Warnings = p.warns
 
 	if len(p.list) == 0 {
 		return nil
@@ -169,15 +185,15 @@ func (c *Config) validateRoutes(p *problems) {
 		}
 	}
 
-	// A runner nothing routes to is usually a typo in a route, so it is worth
-	// naming even though it is not fatal.
+	// A runner nothing routes to is usually a typo, but it is also the state you
+	// pass through while removing one. Warn; do not block.
 	routed := map[string]bool{}
 	for _, r := range c.Routes {
 		routed[r.Runner] = true
 	}
 	for name := range c.Runners {
 		if !routed[name] {
-			p.addf("runner %q has no routes — it will connect and receive nothing", name)
+			p.warnf("runner %q has no routes — it will connect and receive nothing", name)
 		}
 	}
 }

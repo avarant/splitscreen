@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/avarant/splitscreen/internal/store"
+	"github.com/avarant/splitscreen/internal/surface"
 )
 
 // The web view is deliberately small: server-rendered HTML embedded in the
@@ -61,8 +62,13 @@ type webRunner struct {
 	Cwd      string
 	Idle     string
 	Queued   int
-	Channels []string
+	Channels []webChannel
 	Billing  string
+}
+
+type webChannel struct {
+	Label   string
+	Problem string
 }
 
 type webData struct {
@@ -89,13 +95,25 @@ func (g *Gateway) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(names)
 
-	routes := map[string][]string{}
+	routes := map[string][]webChannel{}
 	for _, rt := range cfg.Routes {
-		target := rt.Channel
 		if rt.DM {
-			target = "direct messages"
+			routes[rt.Runner] = append(routes[rt.Runner], webChannel{Label: "direct messages"})
+			continue
 		}
-		routes[rt.Runner] = append(routes[rt.Runner], target)
+		wc := webChannel{Label: rt.Channel}
+		if st, ok := g.ChannelState(rt.Channel); ok {
+			if st.Info.Name != "" {
+				wc.Label = "#" + st.Info.Name
+			}
+			switch st.Info.Membership {
+			case surface.MembershipNotJoined:
+				wc.Problem = "not joined — " + st.Info.Detail
+			case surface.MembershipUnknown:
+				wc.Problem = "unverified"
+			}
+		}
+		routes[rt.Runner] = append(routes[rt.Runner], wc)
 	}
 
 	data := webData{
@@ -203,7 +221,8 @@ var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
     <td>{{.Harness}}{{if .Billing}}<br><span class="sub">{{.Billing}}</span>{{end}}</td>
     <td><code>{{.Cwd}}</code></td>
     <td>{{.Idle}}</td>
-    <td>{{if .Channels}}{{range $i, $c := .Channels}}{{if $i}}<br>{{end}}<code>{{$c}}</code>{{end}}
+    <td>{{if .Channels}}{{range $i, $c := .Channels}}{{if $i}}<br>{{end}}<code>{{$c.Label}}</code>
+          {{if $c.Problem}}<br><span class="warn">{{$c.Problem}}</span>{{end}}{{end}}
         {{else}}<span class="warn">no routes</span>{{end}}</td>
     <td class="num">{{if .Queued}}<span class="warn">{{.Queued}}</span>{{else}}0{{end}}</td>
   </tr>

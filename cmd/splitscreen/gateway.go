@@ -40,7 +40,10 @@ delivery bug this architecture exists to eliminate.`,
 				return err
 			}
 
-			sec, err := buildSecrets(cfg)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			sec, err := buildSecrets(ctx, cfg, log)
 			if err != nil {
 				return err
 			}
@@ -82,9 +85,6 @@ delivery bug this architecture exists to eliminate.`,
 				return err
 			}
 
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-
 			// SIGHUP reloads. A validation failure leaves the running config
 			// untouched: a bad edit must never partially apply.
 			hup := make(chan os.Signal, 1)
@@ -118,7 +118,7 @@ delivery bug this architecture exists to eliminate.`,
 		},
 	}
 
-	cmd.Flags().StringVarP(&cfgPath, "config", "c", "splitscreen.yaml", "path to the configuration file")
+	cmd.Flags().StringVarP(&cfgPath, "config", "c", defaultConfigPath, "path to the configuration file")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
 	cmd.Flags().StringVar(&webAddr, "web", "127.0.0.1:8480",
 		"address for the read-only status page; loopback by default, reach it with a port-forward (empty to disable)")
@@ -140,15 +140,35 @@ func newLogger(level string) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lv}))
 }
 
-func buildSecrets(cfg *config.Config) (secrets.Backend, error) {
+// buildSecrets layers the configured backends. Order is deliberate: an explicit
+// local file wins over a cloud parameter, which wins over the environment. That
+// makes a local override for debugging obvious and temporary, rather than
+// something that silently shadows the real source forever.
+func buildSecrets(ctx context.Context, cfg *config.Config, log *slog.Logger) (secrets.Backend, error) {
 	chain := secrets.Chain{}
+
 	if cfg.Gateway.SecretsDir != "" {
 		dir, err := secrets.NewDirBackend(cfg.Gateway.SecretsDir)
 		if err != nil {
 			return nil, err
 		}
 		chain = append(chain, dir)
+		log.Info("secrets: directory backend", "dir", cfg.Gateway.SecretsDir)
 	}
+
+	if pfx := cfg.Gateway.SecretsSSM.Prefix; pfx != "" {
+		ssmBackend, err := secrets.NewSSMBackend(ctx, secrets.SSMOptions{
+			Prefix:   pfx,
+			Region:   cfg.Gateway.SecretsSSM.Region,
+			CacheTTL: cfg.Gateway.SecretsSSM.CacheTTL.Duration(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		chain = append(chain, ssmBackend)
+		log.Info("secrets: ssm backend", "prefix", pfx)
+	}
+
 	chain = append(chain, secrets.NewEnvBackend())
 	return chain, nil
 }

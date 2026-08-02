@@ -23,6 +23,7 @@ func allCommands() []*cobra.Command {
 		runnerCmd(),
 		enrollCmd(),
 		configCmd(),
+		routeCmd(),
 		certCmd(),
 		credentialHelperCmd(),
 		permissionShimCmd(),
@@ -31,7 +32,9 @@ func allCommands() []*cobra.Command {
 	}
 }
 
-func main() {
+// rootCommand builds the command tree. Separated from main so tests can drive
+// it the way a user would.
+func rootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "splitscreen",
 		Short: "A multiplayer agent harness: one gateway, many runners",
@@ -46,8 +49,11 @@ at rest.`,
 	}
 
 	root.AddCommand(allCommands()...)
+	return root
+}
 
-	if err := root.Execute(); err != nil {
+func main() {
+	if err := rootCommand().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}

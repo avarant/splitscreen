@@ -47,6 +47,8 @@ type Gateway struct {
 
 	bundlesMu sync.Mutex
 	bundles   map[string]bundleState // runner -> last pushed bundle
+
+	channels channelCache
 }
 
 // Options configures a gateway.
@@ -94,10 +96,14 @@ func New(o Options) (*Gateway, error) {
 		hub:      NewHub(),
 		bundles:  map[string]bundleState{},
 	}
+	g.channels.byID = map[string]channelState{}
 	if g.surfaces == nil {
 		g.surfaces = map[string]surface.Surface{}
 	}
 	g.applyConfig(o.Config)
+	for _, w := range o.Config.Warnings {
+		g.log.Warn("config warning", "detail", w)
+	}
 	return g, nil
 }
 
@@ -149,6 +155,13 @@ func (g *Gateway) Reload() error {
 	old := g.cfg.Load()
 	g.applyConfig(c)
 	g.log.Info("config reloaded", "runners", len(c.Runners), "routes", len(c.Routes))
+	for _, w := range c.Warnings {
+		g.log.Warn("config warning", "detail", w)
+	}
+
+	// Re-check membership: a reload is the most likely moment for a route to
+	// have been added to a channel nobody invited the bot into.
+	go g.RefreshChannels(context.Background())
 
 	// Runners whose bundle changed get a push; their live sessions are marked
 	// stale so the change is announced rather than discovered.
@@ -193,6 +206,19 @@ func (g *Gateway) Run(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		g.watchSecretExpiry(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Give the surfaces a moment to authenticate before asking them
+		// anything; a check that races startup reports Unknown for no reason.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
+		g.watchChannels(ctx)
 	}()
 
 	select {

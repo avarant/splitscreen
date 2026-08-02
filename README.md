@@ -82,11 +82,12 @@ splitscreen config check -c splitscreen.yaml
 
 ```sh
 splitscreen cert --host 10.0.0.5 --cert gateway.crt --key gateway.key
-splitscreen enroll staging
+splitscreen enroll staging --write
 ```
 
-`cert` prints a fingerprint for runners to pin; `enroll` prints a token and the
-secret name the gateway looks it up under.
+`cert` prints a fingerprint for runners to pin. `enroll --write` mints a token,
+stores the gateway's half in the configured secrets directory itself, and prints
+only the runner's half — so the token is copied once rather than twice.
 
 **3. Run the gateway.**
 
@@ -122,6 +123,12 @@ this replaces the per-runner allowlists a single-process bridge needs.
 | `!routes` | The routing table |
 | `!cost` | Spend and token usage for the last week |
 
+`!status` and `!routes` also flag any routed channel the bot has not been
+invited into. That case is worth calling out because the platform simply never
+delivers those messages, making it indistinguishable from having no route at
+all — silence with nothing to read. Checking it requires the `channels:read`
+scope; without it the gateway reports "unverified" rather than guessing.
+
 A read-only web view is served on loopback (`127.0.0.1:8480` by default). Reach
 it with a port-forward — `aws ssm start-session`, `ssh -L`, or equivalent — so
 authorization stays the platform's problem rather than something this process
@@ -154,6 +161,26 @@ git config --global credential.useHttpPath true
 
 `useHttpPath` matters: without it git does not tell the helper which repository
 is being accessed, and per-repository scoping becomes impossible.
+
+### Secret backends
+
+Layered, in order: a local directory wins over a cloud parameter, which wins over
+the environment. A local override for debugging is therefore obvious and
+temporary rather than something that silently shadows the real source.
+
+```yaml
+gateway:
+  secrets_dir: /etc/splitscreen/secrets     # one file per secret, 0600
+  secrets_ssm:
+    prefix: /splitscreen                    # AWS Parameter Store
+    region: us-east-2
+    cache_ttl: 5m
+```
+
+The Parameter Store backend reads with the host's own IAM identity, so there is
+no bootstrap secret on the gateway and every read is attributable in CloudTrail.
+Values are cached briefly because authentication resolves a secret on every
+runner connection — without it, a flapping runner would become an API storm.
 
 ### MCP servers
 
@@ -198,11 +225,34 @@ That inversion is the core security property: file contents and third-party API
 responses are untrusted input the agent reads as instructions, so the agent's
 judgment cannot be the control.
 
+## Routing
+
+Add and remove routes with the CLI rather than by hand; it validates before
+writing and edits the YAML node tree, so comments survive:
+
+```sh
+splitscreen route list
+splitscreen route add C0123456789 staging
+splitscreen route remove C0123456789
+systemctl reload splitscreen-gateway
+```
+
+There is deliberately no chat command that mutates routing. Which humans can
+drive which machines and working trees is not a decision that should be typed by
+whoever happens to be in the channel; `!rebind` exists for the thread-level case
+because that has no blast radius.
+
 ## Configuration reference
 
 `splitscreen config check` validates everything and reports every problem at
 once. A config either loads wholly or not at all — a bad edit never partially
 applies, including on `SIGHUP` reload.
+
+Validation distinguishes errors from warnings. An error means the config cannot
+work and blocks loading. A warning — a runner with no routes, say — means it
+probably is not what you meant, but it runs; blocking on those would make
+legitimate intermediate states unreachable, such as removing a runner's last
+route before removing the runner.
 
 Enforced invariants include: one channel maps to exactly one runner, at most one
 DM route, bundle `extends` chains are acyclic, proxied MCP servers declare no

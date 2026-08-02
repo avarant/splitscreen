@@ -20,9 +20,20 @@ gateway:
   # session — those live on the runners.
   store: /var/lib/splitscreen/splitscreen.db
 
+  # Secret backends are layered: a local file wins over a cloud parameter,
+  # which wins over SPLITSCREEN_SECRET_* in the environment. That ordering makes
+  # a debugging override obvious and temporary rather than permanently shadowing
+  # the real source.
+  #
   # One file per secret, mode 0600, directory not group- or world-readable.
-  # Layered over SPLITSCREEN_SECRET_* environment variables.
   secrets_dir: /etc/splitscreen/secrets
+
+  # AWS Parameter Store, read with the instance's own IAM identity — no
+  # bootstrap secret on the box, and every read lands in CloudTrail.
+  secrets_ssm:
+    prefix: /splitscreen
+    region: us-east-2
+    cache_ttl: 5m
 
   slack:
     bot_token_secret: slack-bot     # xoxb-…

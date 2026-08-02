@@ -31,6 +31,7 @@ type fakeSurface struct {
 	resolved []string
 	uploads  []string
 	handler  surface.Handler
+	channels map[string]surface.ChannelInfo
 	seq      int
 }
 
@@ -80,6 +81,24 @@ func (f *fakeSurface) Upload(_ context.Context, u surface.Upload) error {
 	defer f.mu.Unlock()
 	f.uploads = append(f.uploads, u.Name+":"+string(body))
 	return nil
+}
+
+func (f *fakeSurface) Channel(_ context.Context, id string) (surface.ChannelInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if info, ok := f.channels[id]; ok {
+		return info, nil
+	}
+	return surface.ChannelInfo{ID: id, Membership: surface.MembershipJoined, Name: "test-" + id}, nil
+}
+
+func (f *fakeSurface) setChannel(info surface.ChannelInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.channels == nil {
+		f.channels = map[string]surface.ChannelInfo{}
+	}
+	f.channels[info.ID] = info
 }
 
 func (f *fakeSurface) Close() error { return nil }
@@ -666,5 +685,81 @@ func TestWebStatusPage(t *testing.T) {
 	h.gw.handleIndex(rec, httptest.NewRequest("GET", "/nope", nil))
 	if rec.Code != 404 {
 		t.Errorf("unknown path returned %d", rec.Code)
+	}
+}
+
+// A routed channel the bot never joined is the worst failure mode: the platform
+// simply never delivers, so it is indistinguishable from having no route. The
+// check exists to turn that silence into a statement.
+func TestUnjoinedChannelIsReported(t *testing.T) {
+	h := newHarness(t)
+	h.srf.setChannel(surface.ChannelInfo{
+		ID: "C1", Name: "react-migration",
+		Membership: surface.MembershipNotJoined,
+		Detail:     "invite the bot into the channel",
+	})
+
+	h.gw.RefreshChannels(context.Background())
+
+	bad := h.gw.UnreachableChannels()
+	if len(bad) != 1 {
+		t.Fatalf("unreachable = %d, want 1", len(bad))
+	}
+	if bad[0].Runner != "alpha" {
+		t.Errorf("runner = %q", bad[0].Runner)
+	}
+
+	status := h.gw.StatusText()
+	if !strings.Contains(status, "Routed but not joined") {
+		t.Errorf("status does not flag the channel:\n%s", status)
+	}
+	if !strings.Contains(status, "react-migration") {
+		t.Errorf("status should name the channel:\n%s", status)
+	}
+	if !strings.Contains(status, "never reach the gateway") {
+		t.Error("status should say what the consequence is, not just that something is off")
+	}
+
+	if !strings.Contains(h.gw.RoutesText(), "not joined") {
+		t.Errorf("routes should mark the channel:\n%s", h.gw.RoutesText())
+	}
+}
+
+// A surface that cannot answer must not be reported as broken. Painting a
+// healthy deployment red is how a check gets ignored.
+func TestUnverifiableChannelIsNotAProblem(t *testing.T) {
+	h := newHarness(t)
+	h.srf.setChannel(surface.ChannelInfo{
+		ID: "C1", Membership: surface.MembershipUnknown,
+		Detail: "needs the channels:read scope",
+	})
+
+	h.gw.RefreshChannels(context.Background())
+
+	if bad := h.gw.UnreachableChannels(); len(bad) != 0 {
+		t.Fatalf("an unverifiable channel was reported as unreachable: %+v", bad)
+	}
+	status := h.gw.StatusText()
+	if strings.Contains(status, "Routed but not joined") {
+		t.Errorf("status flagged an unverifiable channel:\n%s", status)
+	}
+	if !strings.Contains(h.gw.RoutesText(), "unverified") {
+		t.Errorf("routes should mark it unverified rather than silently fine:\n%s", h.gw.RoutesText())
+	}
+}
+
+func TestJoinedChannelRendersItsName(t *testing.T) {
+	h := newHarness(t)
+	h.srf.setChannel(surface.ChannelInfo{
+		ID: "C1", Name: "clank", Membership: surface.MembershipJoined,
+	})
+	h.gw.RefreshChannels(context.Background())
+
+	routes := h.gw.RoutesText()
+	if !strings.Contains(routes, "#clank") {
+		t.Errorf("routes should show the channel name:\n%s", routes)
+	}
+	if strings.Contains(routes, "not joined") || strings.Contains(routes, "unverified") {
+		t.Errorf("a joined channel was flagged:\n%s", routes)
 	}
 }

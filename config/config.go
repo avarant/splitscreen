@@ -41,6 +41,10 @@ type Config struct {
 	Routes  []Route               `yaml:"routes"`
 	Bundles map[string]*Bundle    `yaml:"bundles"`
 	MCP     map[string]*MCPServer `yaml:"mcp"`
+
+	// Warnings are findings that do not block loading: the config runs, but
+	// probably is not what someone meant. Populated by Validate.
+	Warnings []string `yaml:"-"`
 }
 
 // Display is the per-runner persona. Distinct identities come from

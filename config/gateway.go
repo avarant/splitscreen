@@ -20,6 +20,11 @@ type Gateway struct {
 	// environment. Must not be group- or world-readable.
 	SecretsDir string `yaml:"secrets_dir"`
 
+	// SecretsSSM reads secrets from AWS Parameter Store using the host's own
+	// IAM identity, so there is no bootstrap secret on the gateway and every
+	// read is attributable.
+	SecretsSSM SecretsSSM `yaml:"secrets_ssm"`
+
 	Slack Slack `yaml:"slack"`
 	Forge Forge `yaml:"forge"`
 
@@ -43,6 +48,17 @@ type Gateway struct {
 type TLS struct {
 	Cert string `yaml:"cert"`
 	Key  string `yaml:"key"`
+}
+
+type SecretsSSM struct {
+	// Prefix is the parameter path secrets live under, e.g. "/splitscreen".
+	// Empty disables the backend.
+	Prefix string `yaml:"prefix"`
+	Region string `yaml:"region"`
+	// CacheTTL bounds staleness. Authentication resolves a secret on every
+	// runner connection, so an uncached backend would put an API call in the
+	// reconnect path of a flapping runner.
+	CacheTTL Duration `yaml:"cache_ttl"`
 }
 
 type Slack struct {
@@ -137,6 +153,9 @@ func (c *Config) validateGateway(p *problems) {
 	}
 	if g.SecretsDir != "" && !filepath.IsAbs(g.SecretsDir) {
 		p.addf("gateway.secrets_dir %q must be an absolute path", g.SecretsDir)
+	}
+	if pfx := g.SecretsSSM.Prefix; pfx != "" && !strings.HasPrefix(pfx, "/") {
+		p.addf("gateway.secrets_ssm.prefix %q must be an absolute parameter path", pfx)
 	}
 	if g.Heartbeat.Duration() <= 0 {
 		p.addf("gateway.heartbeat must be positive")
