@@ -53,6 +53,33 @@ type Config struct {
 type Display struct {
 	Name string `yaml:"name"`
 	Icon string `yaml:"icon"`
+	// ShowActivity controls whether tool invocations appear in the thread.
+	//
+	// A turn can run for minutes, and a thread showing nothing reads as broken —
+	// but once the answer lands, a list of shell commands is noise to anyone who
+	// does not know what a tool call is. "transient" resolves that: visible while
+	// the turn runs, removed when it finishes.
+	ShowActivity string `yaml:"show_activity"`
+}
+
+const (
+	// ActivityTransient shows tool lines while a turn runs, then strips them
+	// from the finished message. The default.
+	ActivityTransient = "transient"
+	// ActivityHidden never shows them.
+	ActivityHidden = "hidden"
+	// ActivityFull leaves them in the finished message.
+	ActivityFull = "full"
+)
+
+// EffectiveActivity resolves the display mode, defaulting to transient.
+func (d Display) EffectiveActivity() string {
+	switch d.ShowActivity {
+	case ActivityHidden, ActivityFull:
+		return d.ShowActivity
+	default:
+		return ActivityTransient
+	}
 }
 
 type Runner struct {

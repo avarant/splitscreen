@@ -63,7 +63,7 @@ gateway:
 
 runners:
   staging:
-    display: { name: "Clank", icon: ":robot_face:" }
+    display: { name: "Ada", icon: ":robot_face:" }
     cwd: /var/www/app
     harness: claude-code
     idle: 30m

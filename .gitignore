@@ -9,3 +9,12 @@
 # Go
 *.test
 *.out
+
+# Operator config and secrets — never commit a real deployment's files
+splitscreen.yaml
+!examples/splitscreen.yaml
+/secrets/
+*.pem
+*.key
+*.crt
+*.db

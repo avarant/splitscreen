@@ -780,12 +780,12 @@ func TestUnverifiableChannelIsNotAProblem(t *testing.T) {
 func TestJoinedChannelRendersItsName(t *testing.T) {
 	h := newHarness(t)
 	h.srf.setChannel(surface.ChannelInfo{
-		ID: "C1", Name: "clank", Membership: surface.MembershipJoined,
+		ID: "C1", Name: "agents", Membership: surface.MembershipJoined,
 	})
 	h.gw.RefreshChannels(context.Background())
 
 	routes := h.gw.RoutesText()
-	if !strings.Contains(routes, "#clank") {
+	if !strings.Contains(routes, "#agents") {
 		t.Errorf("routes should show the channel name:\n%s", routes)
 	}
 	if strings.Contains(routes, "not joined") || strings.Contains(routes, "unverified") {
@@ -860,5 +860,58 @@ func TestRepushKeepsTheVersionWhenContentIsUnchanged(t *testing.T) {
 	}
 	if again.Version != original.Version {
 		t.Fatalf("version advanced %d -> %d for identical content", original.Version, again.Version)
+	}
+}
+
+// Tool lines exist to show a long turn is alive. Once the answer arrives they
+// are noise to anyone who does not know what a tool call is, so the finished
+// message must not carry them.
+func TestActivityLinesAreStrippedWhenTheTurnEnds(t *testing.T) {
+	h := newHarness(t)
+	ws := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, ws)
+
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T1",
+		User: surface.User{ID: "U1"}, Text: "where is your config?",
+	})
+	msg := readFrame[*protocol.Message](t, ws)
+
+	send(t, ws, &protocol.ToolStart{
+		ThreadID: msg.ThreadID, TurnID: msg.TurnID,
+		CallID: "c1", Tool: "Bash", Summary: `echo "$CLAUDE_CONFIG_DIR"`,
+	})
+	send(t, ws, &protocol.TextDelta{
+		ThreadID: msg.ThreadID, TurnID: msg.TurnID,
+		Text: "It is /run/user/1000/splitscreen/review/config.",
+	})
+
+	// While the turn runs, the activity is visible.
+	eventually(t, "activity shown mid-turn", func() bool {
+		return strings.Contains(h.srf.allText(), "Bash")
+	})
+
+	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: msg.TurnID})
+
+	eventually(t, "final message rendered", func() bool {
+		h.srf.mu.Lock()
+		defer h.srf.mu.Unlock()
+		for _, p := range h.srf.updates {
+			if strings.Contains(p.Text, "/run/user/1000") && !strings.Contains(p.Text, "Bash") {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The last thing written must carry the answer and not the tool line.
+	h.srf.mu.Lock()
+	defer h.srf.mu.Unlock()
+	last := h.srf.updates[len(h.srf.updates)-1].Text
+	if strings.Contains(last, "Bash") || strings.Contains(last, "echo") {
+		t.Fatalf("the finished message still shows tool calls:\n%s", last)
+	}
+	if !strings.Contains(last, "/run/user/1000") {
+		t.Fatalf("the answer was lost:\n%s", last)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/avarant/splitscreen/config"
 	"github.com/avarant/splitscreen/internal/surface"
 )
 
@@ -74,8 +75,12 @@ func (s *stream) AppendText(text string) {
 }
 
 // AppendActivity records a tool invocation. Tool lines are kept separate from
-// assistant prose so the transcript stays readable when the two interleave.
+// assistant prose so the transcript stays readable when the two interleave, and
+// so they can be dropped from the finished message without disturbing it.
 func (s *stream) AppendActivity(line string) {
+	if s.turn.Activity == config.ActivityHidden {
+		return
+	}
 	s.mu.Lock()
 	s.activity = append(s.activity, line)
 	if len(s.activity) > 12 {
@@ -87,10 +92,14 @@ func (s *stream) AppendActivity(line string) {
 	s.mu.Unlock()
 }
 
-func (s *stream) render() string {
+// render composes the message. On the final pass, activity lines are dropped
+// unless the runner asked to keep them: they exist to show a long turn is alive,
+// which stops being useful the moment the answer arrives.
+func (s *stream) render(final bool) string {
 	var b strings.Builder
 	b.WriteString(s.body.String())
-	if len(s.activity) > 0 {
+	showActivity := !final || s.turn.Activity == config.ActivityFull
+	if len(s.activity) > 0 && showActivity {
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
@@ -103,13 +112,15 @@ func (s *stream) render() string {
 	return strings.TrimSpace(b.String())
 }
 
-func (s *stream) flush(ctx context.Context) {
+func (s *stream) flush(ctx context.Context) { s.flushWith(ctx, false) }
+
+func (s *stream) flushWith(ctx context.Context, final bool) {
 	s.mu.Lock()
-	if !s.dirty || s.closed {
+	if (!s.dirty && !final) || s.closed {
 		s.mu.Unlock()
 		return
 	}
-	text := s.render()
+	text := s.render(final)
 	posted, ref := s.posted, s.ref
 	s.dirty = false
 	s.mu.Unlock()
@@ -168,7 +179,9 @@ func (s *stream) Close(ctx context.Context) {
 
 	close(s.stop)
 	<-s.done
-	s.flush(ctx)
+	// Final pass: strips the activity lines that were only ever there to show
+	// the turn was alive.
+	s.flushWith(ctx, true)
 
 	s.mu.Lock()
 	s.closed = true

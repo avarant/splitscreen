@@ -14,15 +14,15 @@ func TestRoundTrip(t *testing.T) {
 		in   Frame
 	}{
 		{"hello", DirUp, &Hello{
-			Protocol: Version, Runner: "dev3-react",
+			Protocol: Version, Runner: "review",
 			Auth:    Auth{Mode: AuthToken, Value: "enrol-secret"},
 			Host:    Host{ID: "i-0abc", OS: "linux", Arch: "amd64"},
 			Harness: HarnessInfo{Adapter: "claude-code", Version: "2.1.4"},
 		}},
 		{"hello_ack", DirDown, &HelloAck{
-			Protocol: Version, Runner: "dev3-react",
+			Protocol: Version, Runner: "review",
 			Bundle: BundleRef{Version: 14, Digest: "sha256:abc"},
-			Routes: []string{"C0BK7NB65T4"},
+			Routes: []string{"C0123456789"},
 		}},
 		{"message", DirDown, &Message{
 			ThreadID: "t1", TurnID: "turn1", Channel: "C1",

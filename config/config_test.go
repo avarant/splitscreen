@@ -9,9 +9,9 @@ import (
 const valid = `
 runners:
   staging:
-    display:  { name: "Clank", icon: ":robot_face:" }
-    host:     i-06141ec8f53774665
-    cwd:      /var/www/ksdm.dev
+    display:  { name: "Ada", icon: ":robot_face:" }
+    host:     i-0a1b2c3d4e5f67890
+    cwd:      /srv/app
     harness:  claude-code
     bundle:   staging
     idle:     30m
@@ -20,11 +20,11 @@ runners:
       deny: ["Bash(git push --force*)"]
       forge:
         repos: ["acme/widgets"]
-  dev3-react:
-    display:  { name: "Clank React", icon: ":atom_symbol:" }
-    cwd:      /var/www/ksdm.dev3
+  review:
+    display:  { name: "Ada Review", icon: ":atom_symbol:" }
+    cwd:      /srv/app-review
     harness:  claude-code
-    bundle:   dev3-react
+    bundle:   review
     idle:     10m
 
 bundles:
@@ -34,9 +34,9 @@ bundles:
   staging:
     extends: base
     memory: [runners/staging.md]
-  dev3-react:
+  review:
     extends: base
-    memory: [runners/dev3-react.md]
+    memory: [runners/review.md]
     mcp: [github, jira]
 
 mcp:
@@ -52,9 +52,9 @@ mcp:
     deny: ["deleteIssue"]
 
 routes:
-  - channel: C0BK7NB65T4
-    runner:  dev3-react
-  - channel: C0AXXXXXXX
+  - channel: C0123456789
+    runner:  review
+  - channel: C0987654321
     runner:  staging
   - dm: true
     runner: staging
@@ -65,10 +65,10 @@ func TestParseValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if got := c.Runners["dev3-react"].Idle.Duration(); got != 10*time.Minute {
+	if got := c.Runners["review"].Idle.Duration(); got != 10*time.Minute {
 		t.Errorf("idle = %v, want 10m", got)
 	}
-	if r, ok := c.RunnerFor("C0BK7NB65T4", false); !ok || r != "dev3-react" {
+	if r, ok := c.RunnerFor("C0123456789", false); !ok || r != "review" {
 		t.Errorf("RunnerFor(react channel) = %q,%v", r, ok)
 	}
 	if r, ok := c.RunnerFor("", true); !ok || r != "staging" {
@@ -85,11 +85,11 @@ func TestBundleResolutionIsBaseFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.ResolveBundle("dev3-react")
+	got, err := c.ResolveBundle("review")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"org/conventions.md", "runners/dev3-react.md"}
+	want := []string{"org/conventions.md", "runners/review.md"}
 	if len(got.Memory) != len(want) {
 		t.Fatalf("memory = %v, want %v", got.Memory, want)
 	}
@@ -107,7 +107,7 @@ func TestDefaultIdleApplied(t *testing.T) {
 	src := `
 runners:
   solo:
-    display: { name: "Clank" }
+    display: { name: "Ada" }
     cwd: /srv/app
     harness: claude-code
 routes:
@@ -425,7 +425,7 @@ func TestSecretRefsAndDefaults(t *testing.T) {
 	for _, r := range c.SecretRefs() {
 		refs[r] = true
 	}
-	for _, want := range []string{"runner-staging", "runner-dev3-react", "jira-token"} {
+	for _, want := range []string{"runner-staging", "runner-review", "jira-token"} {
 		if !refs[want] {
 			t.Errorf("SecretRefs missing %q (got %v)", want, c.SecretRefs())
 		}

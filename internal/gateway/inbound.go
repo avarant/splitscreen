@@ -26,6 +26,7 @@ type turnContext struct {
 	Runner    string
 	User      surface.User
 	Persona   surface.Persona
+	Activity  string
 	StartedAt time.Time
 }
 
@@ -160,6 +161,7 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 		Runner:    runnerName,
 		User:      in.User,
 		Persona:   persona,
+		Activity:  rc.Display.EffectiveActivity(),
 		StartedAt: time.Now(),
 	}
 	if err := g.store.StartTurn(store.Turn{

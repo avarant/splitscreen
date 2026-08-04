@@ -41,8 +41,8 @@ gateway:
 
   forge:
     kind: github-app
-    app_id: "3361466"
-    installation_id: "123535694"
+    app_id: "123456"
+    installation_id: "7654321"
     key_file: /etc/splitscreen/github-app.pem
 
   # Every runner shares one chat app, and therefore one rate-limit bucket.
@@ -56,8 +56,8 @@ gateway:
 
 runners:
   staging:
-    display: { name: "Clank", icon: ":robot_face:" }
-    host:    i-06141ec8f53774665
+    display: { name: "Ada", icon: ":robot_face:" }
+    host:    i-0a1b2c3d4e5f67890
     cwd:     /var/www/app
     harness: claude-code
     bundle:  staging
@@ -75,7 +75,7 @@ runners:
         repos: ["acme/app"]
 
   review:
-    display: { name: "Clank Review", icon: ":mag:" }
+    display: { name: "Ada Review", icon: ":mag:" }
     cwd:     /var/www/app-review
     harness: claude-code
     bundle:  review
@@ -133,7 +133,7 @@ mcp:
     kind: proxied
     url:  https://mcp.atlassian.com/v1/sse
     auth: basic                      # email:token, as Atlassian API tokens work
-    user: clank@example.com
+    user: bot@example.com
     secret: jira-token               # resolved on the gateway, never shipped
     # Enforced at the gateway, before the call leaves it. No agent decision and
     # no button click can reach these.

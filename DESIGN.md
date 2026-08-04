@@ -8,10 +8,9 @@ One gateway owns the chat surfaces and every credential; many runners own workin
 trees and execute agents.
 
 > **Naming.** Splitscreen is the product: the binary, the config, the protocol.
-> *Clank* is a bot persona a deployment chooses, and is used throughout this
-> document as the running example because it is the name the existing bridges
-> use. A deployment picks its own persona names per runner (§6.1); nothing in
-> the product is called Clank.
+> *Ada* is a bot persona, used throughout as a running example. Personas are
+> chosen per runner by whoever deploys it (§6.1); nothing in the product is
+> called Ada.
 
 ---
 
@@ -19,12 +18,14 @@ trees and execute agents.
 
 ### 1.1 What exists today
 
-The current implementation (`avarant/slack-claude-bridge`) is a single Node process
-that: connects to Slack over Socket Mode, spawns a `claude -p` subprocess per thread,
-routes permission prompts through a shell hook to a localhost HTTP server, and posts
-results back. Three instances run in production against three separate Slack apps.
+The pattern this replaces is a single process that connects to Slack over Socket
+Mode, spawns a `claude -p` subprocess per thread, routes permission prompts through a
+shell hook to a localhost HTTP server, and posts results back. Running more than one
+environment means running more than one of them, each against its own Slack app.
 
-It works. It does not scale along any of the axes that matter.
+It works. It does not scale along any of the axes that matter. What follows is written
+against a real deployment of that shape, because the failure modes below are not
+hypothetical — they are what it actually does.
 
 ### 1.2 The three limitations
 
@@ -145,17 +146,17 @@ sides.
 // runner → gateway
 { "t": "hello",
   "protocol": "1.0",
-  "runner": "dev3-react",
+  "runner": "review",
   "auth": { "mode": "token", "value": "..." },
-  "host": { "id": "i-0afda60a7d312ef2c", "os": "linux", "arch": "amd64" },
+  "host": { "id": "i-0f9e8d7c6b5a43210", "os": "linux", "arch": "amd64" },
   "harness": { "adapter": "claude-code", "version": "2.1.4" },
   "capabilities": ["files", "images", "permission-prompt-tool"] }
 
 // gateway → runner
 { "t": "hello_ack",
-  "runner": "dev3-react",
+  "runner": "review",
   "bundle": { "version": 14, "digest": "sha256:…" },
-  "routes": ["C0BK7NB65T4"],
+  "routes": ["C0123456789"],
   "policy": { … } }
 ```
 
@@ -199,9 +200,9 @@ One YAML file is the source of truth, versioned in the repo, hot-reloaded on `SI
 ```yaml
 runners:
   staging:
-    display:  { name: "Clank", icon: ":robot_face:" }
-    host:     i-06141ec8f53774665
-    cwd:      /var/www/ksdm.dev
+    display:  { name: "Ada", icon: ":robot_face:" }
+    host:     i-0a1b2c3d4e5f67890
+    cwd:      /srv/app
     harness:  claude-code
     bundle:   staging
     idle:     30m
@@ -209,20 +210,20 @@ runners:
       approvers: [U01ABC, U02DEF]
       deny: ["Bash(git push --force*)", "Bash(terraform apply*)"]
       forge:
-        repos: ["Kinetix-Software/ksdm"]
+        repos: ["acme/app"]
 
-  dev3-react:
-    display:  { name: "Clank React", icon: ":atom_symbol:" }
-    host:     i-0afda60a7d312ef2c
-    cwd:      /var/www/ksdm.dev3
+  review:
+    display:  { name: "Ada Review", icon: ":atom_symbol:" }
+    host:     i-0f9e8d7c6b5a43210
+    cwd:      /srv/app-review
     harness:  claude-code
-    bundle:   dev3-react
+    bundle:   review
     idle:     10m                     # RAM-constrained box
 
 routes:
-  - channel: C0BK7NB65T4              # #react-migration
-    runner:  dev3-react
-  - channel: C0AXXXXXXX               # #clank
+  - channel: C0123456789              # #app-migration
+    runner:  review
+  - channel: C0987654321               # #agents
     runner:  staging
   - dm: true
     runner:  staging
@@ -342,8 +343,8 @@ identities:
 Refactor session store
 
 Co-authored-by: Alice Chen <alice@corp.example>
-Splitscreen-Runner: dev3-react
-Splitscreen-Thread: https://corp.slack.com/archives/C0BK7NB65T4/p1721...
+Splitscreen-Runner: review
+Splitscreen-Thread: https://corp.slack.com/archives/C0123456789/p1721...
 ```
 
 The bot is the committer, the human is attributed, and every commit links back to the
@@ -380,7 +381,7 @@ its own permission-prompt server into whatever the bundle declares.
 
 **Declared is not installed.** MCP servers are subprocesses needing binaries on the
 runner. Bundles declare; runners preflight on connect and report failures upward, so a
-missing dependency reads as `dev3-react: mcp "postgres" declared, binary not found`
+missing dependency reads as `review: mcp "postgres" declared, binary not found`
 rather than the agent silently lacking a tool.
 
 ### 9.3 Third-party identity: three modes
@@ -463,7 +464,7 @@ session model later.
 plugins, and user-scope MCP. The unit of isolation is the **runner**, not the machine:
 
 ```
-/run/splitscreen/dev3-react/
+/run/splitscreen/review/
 ├── config/              ← harness config dir (tmpfs, 0600)
 │   ├── CLAUDE.md
 │   ├── settings.json
@@ -492,9 +493,9 @@ bundles:
   base:
     memory: [org/conventions.md, org/git-rules.md]
     skills: [org/deploy-check]
-  dev3-react:
+  review:
     extends: base
-    memory: [runners/dev3-react.md]
+    memory: [runners/review.md]
     plugins: []                     # deliberately none
     mcp:     [github, postgres-dev3]
 ```
@@ -724,7 +725,7 @@ Runner config reduces to three non-secret lines:
 ```
 SPLITSCREEN_GATEWAY=wss://10.0.x.x:8443
 SPLITSCREEN_GATEWAY_FINGERPRINT=sha256:...
-SPLITSCREEN_RUNNER=dev3-react
+SPLITSCREEN_RUNNER=review
 ```
 
 For non-cloud deployments (laptops, bare metal, other clouds), the same enrollment-token

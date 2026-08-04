@@ -93,6 +93,12 @@ func (c *Config) validateRunners(p *problems) {
 		if r.Idle.Duration() <= 0 {
 			p.addf("runner %q: idle must be positive", name)
 		}
+		switch r.Display.ShowActivity {
+		case "", ActivityTransient, ActivityHidden, ActivityFull:
+		default:
+			p.addf("runner %q: display.show_activity must be %q, %q, or %q, got %q",
+				name, ActivityTransient, ActivityHidden, ActivityFull, r.Display.ShowActivity)
+		}
 		if r.Display.Name == "" {
 			p.addf("runner %q: display.name is required — it is what users see on every message", name)
 		}
