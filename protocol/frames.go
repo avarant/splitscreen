@@ -138,6 +138,12 @@ type Hello struct {
 	Host         Host        `json:"host"`
 	Harness      HarnessInfo `json:"harness"`
 	Capabilities []string    `json:"capabilities,omitempty"`
+	// Bundle is the configuration the runner currently has materialized, if
+	// any. The gateway cannot infer this: a runner's config lives on tmpfs and
+	// a reboot wipes it without the gateway ever seeing a disconnect it could
+	// attribute. Reporting it here is what lets the gateway push when the two
+	// disagree rather than trusting its own cache.
+	Bundle *BundleRef `json:"bundle,omitempty"`
 }
 
 func (*Hello) Type() FrameType      { return TypeHello }
@@ -165,6 +171,9 @@ func (h *Hello) Validate() error {
 	}
 	if h.Harness.Adapter == "" {
 		errs = append(errs, errors.New("hello: harness.adapter is required"))
+	}
+	if h.Bundle != nil && h.Bundle.Version < 0 {
+		errs = append(errs, errors.New("hello: bundle version must be non-negative"))
 	}
 	return errors.Join(errs...)
 }
@@ -418,10 +427,14 @@ func (p *PermissionRequest) Validate() error {
 type Decision string
 
 const (
-	DecisionAllow        Decision = "allow"
+	DecisionAllow Decision = "allow"
+	// DecisionAllowSession grants the tool for the rest of the thread's session.
 	DecisionAllowSession Decision = "allow_session"
-	DecisionAllowAlways  Decision = "allow_always"
-	DecisionDeny         Decision = "deny"
+	// DecisionAllowAlways is accepted but no longer offered. Persisting a grant
+	// meant a chat click editing a reviewed config file; the CLI does that now.
+	// The value stays valid so a prompt posted before an upgrade still resolves.
+	DecisionAllowAlways Decision = "allow_always"
+	DecisionDeny        Decision = "deny"
 )
 
 func (d Decision) valid() bool {
@@ -442,6 +455,11 @@ type PermissionResponse struct {
 	// from a prompt. These are never overridable by clicking Allow, because no
 	// prompt was ever posted.
 	PolicyDenied bool `json:"policy_denied,omitempty"`
+	// AutoApproved marks an approval granted by policy without asking a human —
+	// an allow-rule match, or a runner configured to run unattended. Deny rules
+	// are still evaluated first and still win, so this widens what proceeds
+	// without a click, never what proceeds at all.
+	AutoApproved bool `json:"auto_approved,omitempty"`
 }
 
 func (*PermissionResponse) Type() FrameType      { return TypePermissionResponse }
@@ -458,8 +476,15 @@ func (p *PermissionResponse) Validate() error {
 	if p.PolicyDenied && p.Decision != DecisionDeny {
 		errs = append(errs, errors.New("permission.response: policy_denied requires decision=deny"))
 	}
-	if !p.PolicyDenied && p.DecidedBy == nil {
-		errs = append(errs, errors.New("permission.response: decided_by is required unless policy_denied"))
+	if p.AutoApproved && p.Decision == DecisionDeny {
+		errs = append(errs, errors.New("permission.response: auto_approved cannot carry decision=deny"))
+	}
+	if p.PolicyDenied && p.AutoApproved {
+		errs = append(errs, errors.New("permission.response: a decision cannot be both policy-denied and auto-approved"))
+	}
+	// Every decision is attributable: to a human, or explicitly to policy.
+	if !p.PolicyDenied && !p.AutoApproved && p.DecidedBy == nil {
+		errs = append(errs, errors.New("permission.response: decided_by is required unless the decision came from policy"))
 	}
 	return errors.Join(errs...)
 }

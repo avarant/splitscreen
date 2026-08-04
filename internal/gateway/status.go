@@ -50,9 +50,12 @@ func (g *Gateway) StatusText() string {
 		if depth > 0 {
 			b.WriteString(fmt.Sprintf(", *%d queued*", depth))
 		}
-		if rc != nil && rc.Display.Name != "" {
-			b.WriteString(fmt.Sprintf("\n    posts as _%s_, cwd `%s`, idle %s",
-				rc.Display.Name, rc.Cwd, rc.Idle))
+		if rc != nil {
+			b.WriteString("\n    " + PostureText(rc))
+			if rc.Display.Name != "" {
+				b.WriteString(fmt.Sprintf(" · posts as _%s_", rc.Display.Name))
+			}
+			b.WriteString(fmt.Sprintf("\n    cwd `%s`, idle %s", rc.Cwd, rc.Idle))
 		}
 		b.WriteString("\n")
 	}

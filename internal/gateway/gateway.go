@@ -49,6 +49,7 @@ type Gateway struct {
 	bundles   map[string]bundleState // runner -> last pushed bundle
 
 	channels channelCache
+	grants   *grantStore
 }
 
 // Options configures a gateway.
@@ -95,6 +96,7 @@ func New(o Options) (*Gateway, error) {
 		surfaces: o.Surfaces,
 		hub:      NewHub(),
 		bundles:  map[string]bundleState{},
+		grants:   newGrantStore(),
 	}
 	g.channels.byID = map[string]channelState{}
 	if g.surfaces == nil {

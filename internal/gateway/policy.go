@@ -2,8 +2,11 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"strings"
+
+	"github.com/avarant/splitscreen/config"
 )
 
 // MatchDeny reports whether any rule denies a tool invocation, and which rule
@@ -104,6 +107,51 @@ func SummarizeInput(input json.RawMessage) string {
 		return ""
 	}
 	return arg
+}
+
+// autoApprove reports whether static policy lets a tool call proceed without
+// asking a human, and why.
+//
+// It deliberately does not consult deny rules — the caller evaluates those
+// first. Keeping the two apart means no allow rule can ever be written that
+// quietly overrides a denial.
+func autoApprove(rc *config.Runner, tool string, input json.RawMessage) (string, bool) {
+	if rc == nil {
+		return "", false
+	}
+	if rule, matched := MatchDeny(rc.Policy.Allow, tool, input); matched {
+		return "auto-approved by allow rule: " + rule, true
+	}
+	if rc.Policy.AutoApprove {
+		return "auto-approved: this runner runs unattended", true
+	}
+	return "", false
+}
+
+// PostureText summarizes how a runner handles permission requests, so "why
+// didn't it ask me?" has an answer somebody can look up.
+func PostureText(rc *config.Runner) string {
+	if rc == nil {
+		return "unknown"
+	}
+	var parts []string
+	if rc.Policy.AutoApprove {
+		parts = append(parts, "unattended")
+	} else {
+		parts = append(parts, "prompting")
+	}
+	if n := len(rc.Policy.Allow); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d allow", n))
+	}
+	if n := len(rc.Policy.Deny); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d deny", n))
+	} else if rc.Policy.AutoApprove {
+		parts = append(parts, "*no deny rules*")
+	}
+	if n := len(rc.Policy.Approvers); n > 0 && !rc.Policy.AutoApprove {
+		parts = append(parts, fmt.Sprintf("%d approvers", n))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // RepoAllowed reports whether a runner's forge policy permits a repository.

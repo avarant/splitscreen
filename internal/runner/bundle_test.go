@@ -223,3 +223,62 @@ func TestBuildEnvIsAnAllowlist(t *testing.T) {
 		t.Error("the config dir should be set")
 	}
 }
+
+// Subscription-authenticated harnesses keep credentials on disk and refresh them
+// in place. The gateway ships nothing, so the runner must expose the existing
+// file inside the config directory it points the harness at — otherwise the
+// harness reports "not logged in" with no clue why.
+func TestHostCredentialsAreLinked(t *testing.T) {
+	r := testRunner(t)
+	credDir := t.TempDir()
+	cred := filepath.Join(credDir, ".credentials.json")
+	if err := os.WriteFile(cred, []byte(`{"token":"original"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.opts.HarnessCredentials = cred
+
+	if err := r.applyBundle(&protocol.BundlePush{Version: 1, Digest: "d"}); err != nil {
+		t.Fatal(err)
+	}
+
+	link := filepath.Join(r.bundle.ConfigDir(), ".credentials.json")
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("credentials were not exposed: %v", err)
+	}
+	// A symlink, not a copy: the harness rotates this file, and a copy would go
+	// stale and fail much later as an unexplained auth error.
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("credentials were copied rather than linked")
+	}
+
+	if err := os.WriteFile(cred, []byte(`{"token":"rotated"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "rotated") {
+		t.Fatalf("a rotation did not propagate: %s", got)
+	}
+
+	// The config directory is rebuilt wholesale on every push, so the link has to
+	// be re-created each time.
+	if err := r.applyBundle(&protocol.BundlePush{Version: 2, Digest: "d2"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(r.bundle.ConfigDir(), ".credentials.json")); err != nil {
+		t.Fatalf("the link did not survive a second bundle push: %v", err)
+	}
+}
+
+func TestMissingHostCredentialsIsAnError(t *testing.T) {
+	r := testRunner(t)
+	r.opts.HarnessCredentials = "/nonexistent/.credentials.json"
+	// Fail loudly at materialization rather than letting the harness start and
+	// report a confusing login error on the first real request.
+	if err := r.applyBundle(&protocol.BundlePush{Version: 1, Digest: "d"}); err == nil {
+		t.Fatal("a missing credentials file was accepted")
+	}
+}

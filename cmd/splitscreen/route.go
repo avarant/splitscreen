@@ -189,6 +189,153 @@ on that runner's disk — so this only affects new conversations.`,
 
 const defaultConfigPath = "splitscreen.yaml"
 
+// policyCmd is what the removed "Always" button would have done, except it
+// leaves a diff. Permission posture is a security boundary; widening it should
+// be a reviewable edit, not a click by whoever happened to be in the channel.
+func policyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "policy",
+		Short: "Inspect and edit per-runner permission policy",
+	}
+	cmd.AddCommand(policyShowCmd(), policyRuleCmd("allow"), policyRuleCmd("deny"))
+	return cmd
+}
+
+func policyShowCmd() *cobra.Command {
+	var cfgPath string
+	cmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show how each runner handles permission requests",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return err
+			}
+			names := make([]string, 0, len(cfg.Runners))
+			for n := range cfg.Runners {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			for _, n := range names {
+				r := cfg.Runners[n]
+				mode := "prompting"
+				if r.Policy.AutoApprove {
+					mode = "unattended"
+				}
+				fmt.Printf("%s — %s\n", n, mode)
+				for _, d := range r.Policy.Deny {
+					fmt.Printf("    deny   %s\n", d)
+				}
+				for _, a := range r.Policy.Allow {
+					fmt.Printf("    allow  %s\n", a)
+				}
+				if r.Policy.AutoApprove && len(r.Policy.Deny) == 0 {
+					fmt.Printf("    WARNING: unattended with no deny rules — every tool call proceeds unchecked\n")
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&cfgPath, "config", "c", defaultConfigPath, "path to the configuration file")
+	return cmd
+}
+
+func policyRuleCmd(kind string) *cobra.Command {
+	var cfgPath string
+	cmd := &cobra.Command{
+		Use:   kind + " <runner> <rule>",
+		Short: "Add " + kind + " rule to a runner, e.g. 'Bash(git status*)'",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runner, rule := args[0], args[1]
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return fmt.Errorf("the existing config is not valid; fix it first:\n%w", err)
+			}
+			rc, ok := cfg.Runners[runner]
+			if !ok {
+				return fmt.Errorf("no runner named %q is configured", runner)
+			}
+			existing := rc.Policy.Allow
+			if kind == "deny" {
+				existing = rc.Policy.Deny
+			}
+			for _, e := range existing {
+				if e == rule {
+					return fmt.Errorf("runner %q already has that %s rule", runner, kind)
+				}
+			}
+
+			updated, err := editRunnerPolicy(cfgPath, runner, kind, rule)
+			if err != nil {
+				return err
+			}
+			if _, err := config.Parse(updated); err != nil {
+				return fmt.Errorf("the edit would produce an invalid config; nothing was written:\n%w", err)
+			}
+			if err := writeConfig(cfgPath, updated); err != nil {
+				return err
+			}
+			fmt.Printf("Added %s rule %q to %s in %s\n\n", kind, rule, runner, cfgPath)
+			fmt.Printf("Apply it: systemctl reload splitscreen-gateway\n")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&cfgPath, "config", "c", defaultConfigPath, "path to the configuration file")
+	return cmd
+}
+
+// editRunnerPolicy appends a rule through the node tree, so the file's comments
+// survive the edit.
+func editRunnerPolicy(path, runner, kind, rule string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return nil, fmt.Errorf("config: %s is empty", path)
+	}
+	runners := mappingValue(doc.Content[0], "runners")
+	if runners == nil {
+		return nil, fmt.Errorf("config: no runners section")
+	}
+	rc := mappingValue(runners, runner)
+	if rc == nil {
+		return nil, fmt.Errorf("config: runner %q not found in the file", runner)
+	}
+	policy := mappingValue(rc, "policy")
+	if policy == nil {
+		rc.Content = append(rc.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "policy"},
+			&yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"})
+		policy = rc.Content[len(rc.Content)-1]
+	}
+	list := mappingValue(policy, kind)
+	if list == nil {
+		policy.Content = append(policy.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: kind},
+			&yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
+		list = policy.Content[len(policy.Content)-1]
+	}
+	list.Content = append(list.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: rule, Style: yaml.DoubleQuotedStyle})
+
+	var out strings.Builder
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return []byte(out.String()), nil
+}
+
 // editRoutes applies fn to the routes sequence and returns the re-serialized
 // document. Editing the node tree rather than round-tripping through structs is
 // what keeps the file's comments — which carry most of its explanation — intact.

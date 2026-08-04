@@ -106,6 +106,10 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 		if err := g.store.ClearSession(key); err != nil {
 			g.log.Error("clear session failed", "thread", key, "err", err)
 		}
+		// Session grants were scoped to the session that just ended.
+		if n := g.grants.Clear(key); n > 0 {
+			g.log.Info("cleared session grants", "thread", key, "count", n)
+		}
 		g.notice(ctx, in, "Started a fresh session on `"+runnerName+"`.")
 		if text == "" {
 			return
@@ -120,6 +124,7 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 			g.notice(ctx, in, "Already on `"+target+"`.")
 			return
 		}
+		g.grants.Clear(key)
 		if err := g.store.RebindThread(key, target); err != nil {
 			g.log.Error("rebind failed", "thread", key, "err", err)
 			return

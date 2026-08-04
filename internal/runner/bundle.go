@@ -110,6 +110,10 @@ func (r *Runner) applyBundle(push *protocol.BundlePush) error {
 		return err
 	}
 
+	if err := r.linkHostCredentials(staging); err != nil {
+		return err
+	}
+
 	old := configDir + ".old"
 	_ = os.RemoveAll(old)
 	if _, err := os.Stat(configDir); err == nil {
@@ -136,6 +140,30 @@ func (r *Runner) applyBundle(push *protocol.BundlePush) error {
 	r.log.Info("bundle materialized",
 		"version", push.Version, "digest", push.Digest,
 		"files", len(push.Files), "mcp", len(push.MCP), "dir", configDir)
+	return nil
+}
+
+// linkHostCredentials exposes a pre-existing on-host credentials file inside the
+// materialized config directory.
+//
+// A symlink rather than a copy, deliberately: subscription credentials are
+// refreshed in place by the harness itself, and a copy would go stale the first
+// time a token rotated — failing much later as an unexplained "not logged in".
+// It is re-created on every materialization because the config directory is
+// rebuilt wholesale on each bundle push.
+func (r *Runner) linkHostCredentials(root string) error {
+	src := r.opts.HarnessCredentials
+	if src == "" {
+		return nil
+	}
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("runner: harness credentials %q: %w", src, err)
+	}
+	dest := filepath.Join(root, ".credentials.json")
+	_ = os.Remove(dest)
+	if err := os.Symlink(src, dest); err != nil {
+		return fmt.Errorf("runner: link harness credentials: %w", err)
+	}
 	return nil
 }
 

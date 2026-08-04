@@ -99,8 +99,16 @@ type Policy struct {
 	Approvers []string `yaml:"approvers"`
 	// Deny is evaluated gateway-side before any prompt is posted, so it cannot
 	// be overridden by clicking Allow.
-	Deny  []string    `yaml:"deny"`
-	Forge ForgePolicy `yaml:"forge"`
+	Deny []string `yaml:"deny"`
+	// Allow auto-approves matching tools without posting a prompt. Deny is
+	// evaluated first and wins, so this only ever removes a click.
+	Allow []string `yaml:"allow"`
+	// AutoApprove runs the runner unattended: anything not denied proceeds
+	// without asking. Every decision is still recorded and attributed to policy,
+	// and deny rules are still the hard boundary — which makes them the only
+	// remaining control, so they are worth writing carefully.
+	AutoApprove bool        `yaml:"auto_approve"`
+	Forge       ForgePolicy `yaml:"forge"`
 }
 
 type ForgePolicy struct {

@@ -250,13 +250,41 @@ func (g *Gateway) pushBundle(ctx context.Context, c *Conn) error {
 
 	g.bundlesMu.Lock()
 	prev := g.bundles[c.runner]
-	if prev.Digest == push.Digest && prev.Version > 0 {
+
+	// The decision to skip rests on what the RUNNER reports having, not on the
+	// gateway's own cache. A runner's config lives on tmpfs; a reboot wipes it
+	// without producing anything the gateway could distinguish from an ordinary
+	// reconnect. Trusting the cache here is how a runner ends up connected,
+	// healthy, and completely unconfigured.
+	if c.BundleDigest() == push.Digest {
+		version := prev.Version
+		if v := c.BundleVersion(); v > version {
+			// It survived a gateway restart with a higher number; keep numbering
+			// monotonic from what actually exists in the field.
+			version = v
+		}
+		if version == 0 {
+			version = 1
+		}
+		g.bundles[c.runner] = bundleState{Version: version, Digest: push.Digest}
 		g.bundlesMu.Unlock()
-		push.Version = prev.Version
-		c.bundleVersion.Store(int64(prev.Version))
+		push.Version = version
+		c.setBundle(version, push.Digest)
 		return nil
 	}
-	next := bundleState{Version: prev.Version + 1, Digest: push.Digest}
+
+	base := prev.Version
+	if v := c.BundleVersion(); v > base {
+		base = v
+	}
+	version := base + 1
+	if prev.Digest == push.Digest && prev.Version > 0 {
+		// Same content the gateway last built — the runner simply lost it, which
+		// is not a configuration change. Re-send at the existing version so live
+		// sessions are not marked stale and told to restart for nothing.
+		version = prev.Version
+	}
+	next := bundleState{Version: version, Digest: push.Digest}
 	g.bundles[c.runner] = next
 	g.bundlesMu.Unlock()
 
@@ -264,7 +292,7 @@ func (g *Gateway) pushBundle(ctx context.Context, c *Conn) error {
 	if err := c.Send(push); err != nil {
 		return err
 	}
-	c.bundleVersion.Store(int64(next.Version))
+	c.setBundle(next.Version, push.Digest)
 
 	g.log.Info("bundle pushed", "runner", c.runner, "version", next.Version,
 		"digest", next.Digest, "files", len(push.Files), "mcp", len(push.MCP))

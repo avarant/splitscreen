@@ -149,6 +149,35 @@ func (g *Gateway) onPermissionRequest(ctx context.Context, c *Conn, fr *protocol
 		}
 	}
 
+	// Everything below removes a click, never a boundary: a denied tool has
+	// already returned above and cannot reach here.
+	autoAllow := func(reason, kind string) {
+		_ = c.Send(&protocol.PermissionResponse{
+			RequestID: fr.RequestID, Decision: protocol.DecisionAllow,
+			AutoApproved: true, Reason: reason,
+		})
+		_ = g.store.RecordPermissionDecision(fr.RequestID, string(protocol.DecisionAllow), "", reason, false)
+		_ = g.store.Log(store.Event{
+			Kind: kind, Runner: c.runner, ThreadID: turn.ThreadID,
+			TurnID: fr.TurnID, SurfaceUser: turn.User.ID,
+			Detail: map[string]any{"tool": fr.Tool, "reason": reason},
+		})
+	}
+
+	// A grant someone issued earlier in this thread.
+	if gr, ok := g.grants.Held(turn.ThreadID, fr.Tool); ok {
+		autoAllow("allowed for this session by <@"+gr.By+">", "permission.session_grant")
+		return
+	}
+
+	// Static policy: an allow rule, or a runner that runs unattended.
+	if rc != nil {
+		if reason, auto := autoApprove(rc, fr.Tool, fr.Input); auto {
+			autoAllow(reason, "permission.auto_approved")
+			return
+		}
+	}
+
 	srf, ok := g.surfaceFor(turn.Surface)
 	if !ok {
 		_ = c.Send(&protocol.PermissionResponse{
@@ -229,6 +258,12 @@ func (g *Gateway) OnDecision(ctx context.Context, d surface.Decision) {
 		Detail: map[string]any{"request": d.RequestID, "tool": p.Tool, "decision": string(d.Decision)},
 	})
 
+	if d.Decision == protocol.DecisionAllowSession || d.Decision == protocol.DecisionAllowAlways {
+		// allow_always is no longer offered; treat a stale one as session-scoped
+		// rather than silently granting more than the button now promises.
+		g.grants.Grant(p.Turn.ThreadID, p.Tool, d.User.ID)
+	}
+
 	conn, online := g.hub.Get(p.Runner)
 	if online {
 		if err := conn.Send(&protocol.PermissionResponse{
@@ -242,6 +277,9 @@ func (g *Gateway) OnDecision(ctx context.Context, d surface.Decision) {
 
 	if srf, ok := g.surfaceFor(p.Turn.Surface); ok {
 		text := fmt.Sprintf("`%s` — *%s* by <@%s>", p.Tool, d.Decision, d.User.ID)
+		if d.Decision == protocol.DecisionAllowSession || d.Decision == protocol.DecisionAllowAlways {
+			text = fmt.Sprintf("`%s` — allowed for the rest of this session by <@%s>", p.Tool, d.User.ID)
+		}
 		if !online {
 			text += " _(runner disconnected before the decision reached it)_"
 		}

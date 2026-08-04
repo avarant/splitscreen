@@ -117,6 +117,20 @@ func (c *Config) validateRunners(p *problems) {
 				p.addf("runner %q: deny rule %d is empty", name, i)
 			}
 		}
+		for i, a := range r.Policy.Allow {
+			if strings.TrimSpace(a) == "" {
+				p.addf("runner %q: allow rule %d is empty", name, i)
+			}
+		}
+		if r.Policy.AutoApprove && len(r.Policy.Deny) == 0 {
+			// Not fatal — an operator may genuinely want this — but in auto mode
+			// the deny list is the only thing left between the agent and the
+			// machine, so an empty one should never be silent.
+			p.warnf("runner %q runs unattended with no deny rules: every tool call proceeds unchecked", name)
+		}
+		if r.Policy.AutoApprove && len(r.Policy.Approvers) > 0 {
+			p.warnf("runner %q sets approvers but also auto_approve, so no prompt is ever posted and the approver list has no effect", name)
+		}
 		for _, repo := range r.Policy.Forge.Repos {
 			if strings.Count(repo, "/") != 1 || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") {
 				p.addf("runner %q: forge repo %q must be in owner/name form", name, repo)

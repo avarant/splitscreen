@@ -40,9 +40,15 @@ type Options struct {
 
 	Cwd         string
 	HarnessName string
-	RuntimeRoot string
-	SelfPath    string
-	IdleTimeout time.Duration
+	// HarnessCredentials is an existing credentials file on this host to expose
+	// inside the materialized config directory. Subscription-authenticated
+	// harnesses keep their credentials on disk and refresh them in place, so the
+	// gateway has nothing to ship — the file is already here and must simply be
+	// reachable from the config dir the harness is pointed at.
+	HarnessCredentials string
+	RuntimeRoot        string
+	SelfPath           string
+	IdleTimeout        time.Duration
 
 	Logger *slog.Logger
 }
@@ -180,6 +186,11 @@ func (r *Runner) connectOnce(ctx context.Context) error {
 		},
 		Harness:      protocol.HarnessInfo{Adapter: r.adapter.Name()},
 		Capabilities: []string{"files", "images", "permission-prompt-tool", "proxied-mcp"},
+	}
+	// Tell the gateway what we already have. After a reboot this is empty even
+	// though the gateway may believe it pushed — the runtime root is tmpfs.
+	if v, d := r.bundle.Version(), r.bundle.Digest(); d != "" {
+		hello.Bundle = &protocol.BundleRef{Version: v, Digest: d}
 	}
 	if err := r.send(ctx, hello); err != nil {
 		return err

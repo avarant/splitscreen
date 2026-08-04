@@ -225,6 +225,35 @@ func (h *harness) connect(t *testing.T, token string) *websocket.Conn {
 	return ws
 }
 
+// connectWithBundle performs the handshake claiming to already hold a bundle.
+func (h *harness) connectWithBundle(t *testing.T, token string, b *protocol.BundleRef) *websocket.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(h.srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { ws.Close(websocket.StatusNormalClosure, "") })
+
+	hello, err := protocol.Encode(&protocol.Hello{
+		Protocol: protocol.Version,
+		Runner:   "alpha",
+		Auth:     protocol.Auth{Mode: protocol.AuthToken, Value: token},
+		Host:     protocol.Host{OS: "linux", Arch: "amd64"},
+		Harness:  protocol.HarnessInfo{Adapter: "claude-code"},
+		Bundle:   b,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, websocket.MessageText, hello); err != nil {
+		t.Fatalf("write hello: %v", err)
+	}
+	return ws
+}
+
 // readFrame reads one frame of the expected type, skipping heartbeats.
 func readFrame[T protocol.Frame](t *testing.T, ws *websocket.Conn) T {
 	t.Helper()
@@ -761,5 +790,75 @@ func TestJoinedChannelRendersItsName(t *testing.T) {
 	}
 	if strings.Contains(routes, "not joined") || strings.Contains(routes, "unverified") {
 		t.Errorf("a joined channel was flagged:\n%s", routes)
+	}
+}
+
+// A runner's config lives on tmpfs. After a reboot it has nothing, but the
+// gateway's cache still says it pushed — so the push decision must rest on what
+// the runner reports, not on what the gateway remembers. Getting this wrong
+// leaves a runner connected, healthy, and completely unconfigured.
+func TestBundleIsRepushedWhenTheRunnerLostIt(t *testing.T) {
+	h := newHarness(t)
+
+	first := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, first)
+	push := readFrame[*protocol.BundlePush](t, first)
+	if push.Version != 1 {
+		t.Fatalf("first push version = %d", push.Version)
+	}
+	digest := push.Digest
+
+	// Reconnect claiming to still hold it: the gateway should not resend.
+	second := h.connectWithBundle(t, "s3cret", &protocol.BundleRef{Version: 1, Digest: digest})
+	readFrame[*protocol.HelloAck](t, second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	for {
+		typ, data, err := second.Read(ctx)
+		if err != nil {
+			break // nothing more arrived, as intended
+		}
+		if typ != websocket.MessageText {
+			continue
+		}
+		if f, derr := protocol.Decode(data, protocol.DirDown); derr == nil {
+			if _, resent := f.(*protocol.BundlePush); resent {
+				t.Fatal("the gateway resent a bundle the runner already had")
+			}
+		}
+	}
+
+	// Now reconnect having lost it — a reboot the gateway never saw.
+	third := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, third)
+	again := readFrame[*protocol.BundlePush](t, third)
+	if again.Digest != digest {
+		t.Fatalf("digest = %q, want the same content", again.Digest)
+	}
+	// The version deliberately does NOT advance: see
+	// TestRepushKeepsTheVersionWhenContentIsUnchanged. What matters here is only
+	// that the bundle was sent again at all.
+}
+
+// Losing a bundle is not a configuration change. Re-sending it must not bump the
+// version, or every runner restart would mark its live sessions stale and tell
+// people to restart conversations for a change that never happened.
+func TestRepushKeepsTheVersionWhenContentIsUnchanged(t *testing.T) {
+	h := newHarness(t)
+
+	first := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, first)
+	original := readFrame[*protocol.BundlePush](t, first)
+
+	// Reconnect having lost it, as after a reboot.
+	second := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, second)
+	again := readFrame[*protocol.BundlePush](t, second)
+
+	if again.Digest != original.Digest {
+		t.Fatalf("content changed unexpectedly: %q -> %q", original.Digest, again.Digest)
+	}
+	if again.Version != original.Version {
+		t.Fatalf("version advanced %d -> %d for identical content", original.Version, again.Version)
 	}
 }

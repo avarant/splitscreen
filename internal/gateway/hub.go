@@ -95,6 +95,7 @@ type Conn struct {
 	blobs sync.Map
 
 	bundleVersion atomic.Int64
+	bundleDigest  atomic.Value // string: what the runner currently has
 }
 
 func newConn(gw *Gateway, ws *websocket.Conn, hello *protocol.Hello, ver protocol.SemVer) *Conn {
@@ -109,7 +110,23 @@ func newConn(gw *Gateway, ws *websocket.Conn, hello *protocol.Hello, ver protoco
 		connectedAt: time.Now(),
 	}
 	c.lastSeen.Store(time.Now().UnixNano())
+	c.bundleDigest.Store("")
+	if hello.Bundle != nil {
+		c.bundleDigest.Store(hello.Bundle.Digest)
+		c.bundleVersion.Store(int64(hello.Bundle.Version))
+	}
 	return c
+}
+
+// BundleDigest is the configuration the runner reports having materialized.
+func (c *Conn) BundleDigest() string {
+	s, _ := c.bundleDigest.Load().(string)
+	return s
+}
+
+func (c *Conn) setBundle(version int, digest string) {
+	c.bundleVersion.Store(int64(version))
+	c.bundleDigest.Store(digest)
 }
 
 func (c *Conn) Runner() string         { return c.runner }

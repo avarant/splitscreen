@@ -2,7 +2,10 @@ package gateway
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/avarant/splitscreen/config"
 )
 
 func TestMatchDeny(t *testing.T) {
@@ -83,5 +86,76 @@ func TestSummarizeInput(t *testing.T) {
 	}
 	if got := SummarizeInput(nil); got != "" {
 		t.Errorf("summary of nothing = %q, want empty", got)
+	}
+}
+
+func TestAutoApprove(t *testing.T) {
+	if _, auto := autoApprove(&config.Runner{}, "Bash", nil); auto {
+		t.Error("a runner with no allow rules and no auto_approve should prompt")
+	}
+
+	withAllow := &config.Runner{Policy: config.Policy{Allow: []string{"Read", "Bash(git status*)"}}}
+	if _, auto := autoApprove(withAllow, "Read", nil); !auto {
+		t.Error("an allow-listed tool should not prompt")
+	}
+	if _, auto := autoApprove(withAllow, "Bash", json.RawMessage(`{"command":"git status"}`)); !auto {
+		t.Error("an allow rule with an argument pattern should match")
+	}
+	if _, auto := autoApprove(withAllow, "Bash", json.RawMessage(`{"command":"rm -rf /"}`)); auto {
+		t.Error("a non-matching command was auto-approved")
+	}
+
+	unattended := &config.Runner{Policy: config.Policy{AutoApprove: true}}
+	reason, auto := autoApprove(unattended, "Anything", nil)
+	if !auto {
+		t.Fatal("an unattended runner should not prompt")
+	}
+	if !strings.Contains(reason, "unattended") {
+		t.Errorf("reason = %q; it should record why no human was asked", reason)
+	}
+}
+
+func TestPostureText(t *testing.T) {
+	unattended := &config.Runner{Policy: config.Policy{
+		AutoApprove: true, Deny: []string{"a", "b"},
+	}}
+	got := PostureText(unattended)
+	if !strings.Contains(got, "unattended") || !strings.Contains(got, "2 deny") {
+		t.Errorf("posture = %q", got)
+	}
+
+	// Unattended with nothing denied is the one combination that deserves to
+	// look alarming in status output.
+	bare := &config.Runner{Policy: config.Policy{AutoApprove: true}}
+	if !strings.Contains(PostureText(bare), "no deny rules") {
+		t.Errorf("posture = %q; an unguarded unattended runner must be visible", PostureText(bare))
+	}
+}
+
+func TestSessionGrants(t *testing.T) {
+	g := newGrantStore()
+	if _, ok := g.Held("t1", "Bash"); ok {
+		t.Fatal("an ungranted tool was reported as held")
+	}
+
+	g.Grant("t1", "Bash", "U1")
+	gr, ok := g.Held("t1", "Bash")
+	if !ok || gr.By != "U1" {
+		t.Fatalf("grant = %+v ok=%v", gr, ok)
+	}
+	// Grants are per thread: approving in one conversation must not leak into
+	// another.
+	if _, ok := g.Held("t2", "Bash"); ok {
+		t.Fatal("a grant leaked across threads")
+	}
+	if _, ok := g.Held("t1", "Write"); ok {
+		t.Fatal("a grant leaked across tools")
+	}
+
+	if n := g.Clear("t1"); n != 1 {
+		t.Fatalf("cleared %d grants, want 1", n)
+	}
+	if _, ok := g.Held("t1", "Bash"); ok {
+		t.Fatal("a grant survived the session it was scoped to")
 	}
 }

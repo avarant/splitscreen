@@ -26,6 +26,7 @@ func runnerCmd() *cobra.Command {
 		insecure    bool
 		cwd         string
 		harnessName string
+		harnessCred string
 		runtimeRoot string
 		idle        time.Duration
 		logLevel    string
@@ -65,16 +66,17 @@ chat credentials, no forge credentials, and no routing configuration.`,
 			}
 
 			r, err := runner.New(runner.Options{
-				Name:        name,
-				Gateway:     gatewayURL,
-				Token:       token,
-				Fingerprint: fingerprint,
-				Insecure:    insecure,
-				Cwd:         cwd,
-				HarnessName: harnessName,
-				RuntimeRoot: runtimeRoot,
-				IdleTimeout: idle,
-				Logger:      log,
+				Name:               name,
+				Gateway:            gatewayURL,
+				Token:              token,
+				Fingerprint:        fingerprint,
+				Insecure:           insecure,
+				Cwd:                cwd,
+				HarnessName:        harnessName,
+				HarnessCredentials: harnessCred,
+				RuntimeRoot:        runtimeRoot,
+				IdleTimeout:        idle,
+				Logger:             log,
 			})
 			if err != nil {
 				return err
@@ -101,6 +103,9 @@ chat credentials, no forge credentials, and no routing configuration.`,
 	f.StringVar(&cwd, "cwd", "", "working tree the agent operates on")
 	f.StringVar(&harnessName, "harness", "claude-code",
 		fmt.Sprintf("harness adapter (available: %s)", strings.Join(harness.Names(), ", ")))
+	f.StringVar(&harnessCred, "harness-credentials", os.Getenv("SPLITSCREEN_HARNESS_CREDENTIALS"),
+		"existing credentials file on this host to expose in the harness config dir "+
+			"(for subscription auth, where the credential is already on disk and refreshed in place)")
 	f.StringVar(&runtimeRoot, "runtime-root", "", "runtime directory; should be tmpfs (default /run/splitscreen)")
 	f.DurationVar(&idle, "idle", 30*time.Minute, "kill a session after this much silence; it resumes on the next message")
 	f.StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")

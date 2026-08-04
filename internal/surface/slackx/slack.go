@@ -255,9 +255,12 @@ func (s *Surface) Prompt(ctx context.Context, p surface.Prompt) (surface.Ref, er
 	}
 	blocks = append(blocks, slack.NewActionBlock(
 		permissionAction,
+		// Three buttons, each doing exactly what it says. "Always" was removed:
+		// it implied appending to a runner's allow list, which would mean a chat
+		// click mutating a reviewed config file. Use `splitscreen policy allow`
+		// for that, so the change leaves a diff.
 		button("Allow", string(protocol.DecisionAllow), p.RequestID, slack.StylePrimary),
 		button("Session", string(protocol.DecisionAllowSession), p.RequestID, slack.StyleDefault),
-		button("Always", string(protocol.DecisionAllowAlways), p.RequestID, slack.StyleDefault),
 		button("Deny", string(protocol.DecisionDeny), p.RequestID, slack.StyleDanger),
 	))
 
