@@ -209,7 +209,7 @@ func personaOptions(p surface.Persona) []slack.MsgOption {
 }
 
 func (s *Surface) Post(ctx context.Context, p surface.Post) (surface.Ref, error) {
-	opts := []slack.MsgOption{slack.MsgOptionText(p.Text, false)}
+	opts := []slack.MsgOption{slack.MsgOptionText(ToMrkdwn(p.Text), false)}
 	if p.Thread != "" {
 		opts = append(opts, slack.MsgOptionTS(p.Thread))
 	}
@@ -231,7 +231,7 @@ func (s *Surface) Post(ctx context.Context, p surface.Post) (surface.Ref, error)
 }
 
 func (s *Surface) Update(ctx context.Context, ref surface.Ref, p surface.Post) error {
-	opts := []slack.MsgOption{slack.MsgOptionText(p.Text, false)}
+	opts := []slack.MsgOption{slack.MsgOptionText(ToMrkdwn(p.Text), false)}
 	opts = append(opts, personaOptions(p.Persona)...)
 	_, _, _, err := s.api.UpdateMessageContext(ctx, ref.Channel, ref.ID, opts...)
 	if err != nil {
@@ -243,7 +243,7 @@ func (s *Surface) Update(ctx context.Context, ref surface.Ref, p surface.Post) e
 func (s *Surface) Prompt(ctx context.Context, p surface.Prompt) (surface.Ref, error) {
 	header := fmt.Sprintf("*Permission requested* — `%s`", p.Tool)
 	if p.Summary != "" {
-		header += "\n" + p.Summary
+		header += "\n" + ToMrkdwn(p.Summary)
 	}
 	blocks := []slack.Block{
 		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, header, false, false), nil, nil),
@@ -295,6 +295,7 @@ func button(label, decision, requestID string, style slack.Style) *slack.ButtonB
 // Resolve strips the buttons from a decided prompt. Leaving live controls on a
 // resolved request invites a second click that can never take effect.
 func (s *Surface) Resolve(ctx context.Context, ref surface.Ref, text string) error {
+	text = ToMrkdwn(text)
 	_, _, _, err := s.api.UpdateMessageContext(ctx, ref.Channel, ref.ID,
 		slack.MsgOptionBlocks(slack.NewSectionBlock(
 			slack.NewTextBlockObject(slack.MarkdownType, text, false, false), nil, nil)),

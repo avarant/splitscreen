@@ -228,3 +228,67 @@ func TestTruncate(t *testing.T) {
 		t.Errorf("got %d chars, %q", len(got), got[len(got)-20:])
 	}
 }
+
+func TestToMrkdwn(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"bold", "it is **not** here", "it is *not* here"},
+		{"bold underscores", "it is __not__ here", "it is *not* here"},
+		{"italic becomes underscore", "a *word* here", "a _word_ here"},
+		{"bold is not re-consumed as italic", "**a** and *b*", "*a* and _b_"},
+		{"heading", "# Title\nbody", "*Title*\nbody"},
+		{"deep heading", "### Sub\nbody", "*Sub*\nbody"},
+		{"link", "see [docs](https://x.dev/a)", "see <https://x.dev/a|docs>"},
+		{"bare link", "see [](https://x.dev)", "see <https://x.dev>"},
+		{"strikethrough", "~~gone~~", "~gone~"},
+		{"bullets", "- one\n- two", "• one\n• two"},
+		{"nested bullets keep indent", "- a\n  - b", "• a\n  • b"},
+		{"rule", "a\n---\nb", "a\n───────────\nb"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ToMrkdwn(tc.in); got != tc.want {
+				t.Errorf("ToMrkdwn(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Code is the one place Markdown syntax must survive verbatim — rewriting it
+// would corrupt the very thing a coding agent most often sends.
+func TestCodeIsUntouched(t *testing.T) {
+	in := "before **b**\n```go\nx := a ** b  // **not bold**\n- not a bullet\n```\nafter **b**"
+	got := ToMrkdwn(in)
+	if !strings.Contains(got, "x := a ** b  // **not bold**") {
+		t.Errorf("fenced block was rewritten:\n%s", got)
+	}
+	if !strings.Contains(got, "- not a bullet") {
+		t.Errorf("a bullet inside a fence was converted:\n%s", got)
+	}
+	if !strings.Contains(got, "before *b*") || !strings.Contains(got, "after *b*") {
+		t.Errorf("prose around the fence was not converted:\n%s", got)
+	}
+}
+
+func TestInlineCodeIsUntouched(t *testing.T) {
+	got := ToMrkdwn("use `a ** b` and **this**")
+	if !strings.Contains(got, "`a ** b`") {
+		t.Errorf("inline code was rewritten: %q", got)
+	}
+	if !strings.Contains(got, "*this*") {
+		t.Errorf("prose was not converted: %q", got)
+	}
+}
+
+// The exact output that rendered wrong in Slack.
+func TestRealWorldSample(t *testing.T) {
+	in := "It's **not** ~/.claude — my config home is set via CLAUDE_CONFIG_DIR.\n\n" +
+		"- **HOME is still /home/ubuntu** — only the config was redirected.\n" +
+		"- **Credentials are shared** with the real home."
+	got := ToMrkdwn(in)
+	if strings.Contains(got, "**") {
+		t.Errorf("double asterisks survived:\n%s", got)
+	}
+	if !strings.Contains(got, "• *HOME is still /home/ubuntu*") {
+		t.Errorf("bullet and bold not both converted:\n%s", got)
+	}
+}
