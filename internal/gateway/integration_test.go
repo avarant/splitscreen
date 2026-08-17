@@ -353,7 +353,7 @@ func TestTurnRoundTrip(t *testing.T) {
 
 	h.gw.OnMessage(context.Background(), surface.Inbound{
 		Surface: "test", Channel: "C1", Thread: "T1",
-		User: surface.User{ID: "U1"}, Text: "hello",
+		User: surface.User{ID: "U1"}, Text: "hello", Addressed: true,
 	})
 
 	msg := readFrame[*protocol.Message](t, ws)
@@ -403,7 +403,7 @@ func TestPolicyDenialSkipsThePrompt(t *testing.T) {
 
 	h.gw.OnMessage(context.Background(), surface.Inbound{
 		Surface: "test", Channel: "C1", Thread: "T1",
-		User: surface.User{ID: "U1"}, Text: "go",
+		User: surface.User{ID: "U1"}, Text: "go", Addressed: true,
 	})
 	msg := readFrame[*protocol.Message](t, ws)
 
@@ -436,7 +436,7 @@ func TestPermissionPromptAndDecision(t *testing.T) {
 
 	h.gw.OnMessage(context.Background(), surface.Inbound{
 		Surface: "test", Channel: "C1", Thread: "T1",
-		User: surface.User{ID: "U1"}, Text: "go",
+		User: surface.User{ID: "U1"}, Text: "go", Addressed: true,
 	})
 	msg := readFrame[*protocol.Message](t, ws)
 
@@ -517,7 +517,7 @@ func TestOfflineQueueingAndDrain(t *testing.T) {
 
 	h.gw.OnMessage(context.Background(), surface.Inbound{
 		Surface: "test", Channel: "C1", Thread: "T1",
-		User: surface.User{ID: "U1"}, Text: "while you were out",
+		User: surface.User{ID: "U1"}, Text: "while you were out", Addressed: true,
 	})
 
 	depth, err := h.st.QueueDepth("alpha")
@@ -552,7 +552,7 @@ func TestThreadBindingIsSticky(t *testing.T) {
 
 	h.gw.OnMessage(ctx, surface.Inbound{
 		Surface: "test", Channel: "C1", Thread: "T1",
-		User: surface.User{ID: "U1"}, Text: "first",
+		User: surface.User{ID: "U1"}, Text: "first", Addressed: true,
 	})
 
 	key := threadKey("test", "C1", "T1")
@@ -585,13 +585,70 @@ func TestUnroutedChannelIsIgnored(t *testing.T) {
 	h := newHarness(t)
 	h.gw.OnMessage(context.Background(), surface.Inbound{
 		Surface: "test", Channel: "C-UNKNOWN", Thread: "T9",
-		User: surface.User{ID: "U1"}, Text: "anyone there?",
+		User: surface.User{ID: "U1"}, Text: "anyone there?", Addressed: true,
 	})
 	if got := h.srf.allText(); got != "" {
 		t.Fatalf("an unrouted channel produced output: %q", got)
 	}
 	if _, err := h.st.Thread(threadKey("test", "C-UNKNOWN", "T9")); err == nil {
 		t.Fatal("an unrouted channel created a thread binding")
+	}
+}
+
+// Routing a channel says which runner may answer there, not that everything
+// said there is for it. Without this, a runner cannot share a channel with the
+// humans who use it — it answers people talking to each other, including people
+// talking ABOUT it.
+func TestUnaddressedMessageDoesNotStartAThread(t *testing.T) {
+	h := newHarness(t)
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T-CHAT",
+		User: surface.User{ID: "U1"}, Text: "did anyone look at the migration yet",
+	})
+	if got := h.srf.allText(); got != "" {
+		t.Fatalf("an unaddressed message produced output: %q", got)
+	}
+	if _, err := h.st.Thread(threadKey("test", "C1", "T-CHAT")); err == nil {
+		t.Fatal("an unaddressed message created a thread binding")
+	}
+}
+
+// The other half: once a thread is underway, replies are the reply. Requiring a
+// mention per turn would make every conversation read like dictation.
+func TestBoundThreadContinuesWithoutBeingAddressed(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.gw.OnMessage(ctx, surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T-CONV",
+		User: surface.User{ID: "U1"}, Text: "hi", Addressed: true,
+	})
+	key := threadKey("test", "C1", "T-CONV")
+	if _, err := h.st.Thread(key); err != nil {
+		t.Fatalf("addressed message did not bind a thread: %v", err)
+	}
+	h.gw.OnMessage(ctx, surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T-CONV",
+		User: surface.User{ID: "U1"}, Text: "and the other thing",
+	})
+	th, err := h.st.Thread(key)
+	if err != nil {
+		t.Fatalf("follow-up dropped the binding: %v", err)
+	}
+	if th.Runner != "alpha" {
+		t.Fatalf("runner = %q, want alpha", th.Runner)
+	}
+}
+
+// "!status" is addressing: nobody types it at a colleague. Commands have to work
+// without a mention or the gate makes the bot harder to operate than to use.
+func TestBareCommandIsTreatedAsAddressing(t *testing.T) {
+	h := newHarness(t)
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T-CMD",
+		User: surface.User{ID: "U1"}, Text: "!status",
+	})
+	if got := h.srf.allText(); got == "" {
+		t.Fatal("a bare !status in a routed channel produced no output")
 	}
 }
 
@@ -656,7 +713,7 @@ func TestUnknownUsageIsNotZero(t *testing.T) {
 
 	h.gw.OnMessage(context.Background(), surface.Inbound{
 		Surface: "test", Channel: "C1", Thread: "T1",
-		User: surface.User{ID: "U1"}, Text: "go",
+		User: surface.User{ID: "U1"}, Text: "go", Addressed: true,
 	})
 	msg := readFrame[*protocol.Message](t, ws)
 
@@ -683,7 +740,7 @@ func TestWebStatusPage(t *testing.T) {
 	// number is genuinely unknown.
 	h.gw.OnMessage(context.Background(), surface.Inbound{
 		Surface: "test", Channel: "C1", Thread: "T1",
-		User: surface.User{ID: "U1"}, Text: "go",
+		User: surface.User{ID: "U1"}, Text: "go", Addressed: true,
 	})
 	msg := readFrame[*protocol.Message](t, ws)
 	send(t, ws, &protocol.Usage{ThreadID: msg.ThreadID, TurnID: msg.TurnID, Known: false})
@@ -873,7 +930,7 @@ func TestActivityLinesAreStrippedWhenTheTurnEnds(t *testing.T) {
 
 	h.gw.OnMessage(context.Background(), surface.Inbound{
 		Surface: "test", Channel: "C1", Thread: "T1",
-		User: surface.User{ID: "U1"}, Text: "where is your config?",
+		User: surface.User{ID: "U1"}, Text: "where is your config?", Addressed: true,
 	})
 	msg := readFrame[*protocol.Message](t, ws)
 

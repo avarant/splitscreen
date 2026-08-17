@@ -246,7 +246,8 @@ overrides (scope `chat:write.customize`), not from separate apps.
 
 Accepted tradeoff: personas are cosmetic. There is one bot user, so you cannot
 `@`-mention a specific runner, and there is one DM conversation per person — hence the
-explicit `dm:` route. Channel-based routing replaces mention-based routing.
+explicit `dm:` route. Channel routing selects *which* runner answers; mentions are
+still what decides *whether* one does (§7.1).
 
 ---
 
@@ -269,6 +270,27 @@ runner's disk. Consequences:
 offline the message queues (bounded) and the gateway replies in-thread with the queue
 depth. A runner deploy or reboot becomes visible-and-recovered rather than silently
 dropping messages.
+
+### 7.1 Starting a conversation
+
+**Starting** a thread requires addressing the bot; **continuing** one does not.
+Concretely: a new thread needs an `@`-mention, a DM, or a bare `!command`; every reply
+inside a thread the gateway already owns is dispatched as-is.
+
+Routing alone is not enough of a gate. A route says which runner may answer in a
+channel, not that everything said there is for it — and the moment a runner lives in a
+channel people also use to talk to each other, answering everything means answering
+messages *about* the bot as though they were *to* it. The earlier design assumed one
+dedicated channel per runner, which holds for a pilot and stops holding the first time a
+real team channel is routed.
+
+The two halves are not symmetric on purpose. Requiring a mention per turn would make
+every conversation read like dictation; requiring none at all makes the bot a
+participant in discussions it was not invited into. Threads are the unit of
+conversation, so the gate belongs at the thread boundary.
+
+Surfaces that cannot express addressing leave `Addressed` false and must be given a
+channel of their own — the gate degrades to the old assumption rather than to silence.
 
 ---
 

@@ -60,6 +60,17 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 		return
 	}
 
+	// Starting a conversation requires being addressed; continuing one does not.
+	// Channel routing says WHICH runner may answer here, not that everything
+	// said here is for it — a channel people also talk to each other in would
+	// otherwise get an answer to every message, including messages about the
+	// bot rather than to it.
+	//
+	// A bare "!status" is addressing too: nobody types it at a colleague.
+	if isNew && !in.Addressed && cmd == "" {
+		return
+	}
+
 	var runnerName string
 	switch {
 	case !isNew:

@@ -292,3 +292,73 @@ func TestRealWorldSample(t *testing.T) {
 		t.Errorf("bullet and bold not both converted:\n%s", got)
 	}
 }
+
+// Addressing is what lets a runner share a channel with the people using it.
+// The mention arrives as the raw "<@UBOT>" token, not as a display name.
+func TestAddressedDetection(t *testing.T) {
+	cases := []struct {
+		name        string
+		ev          *slackevents.MessageEvent
+		wantAddress bool
+	}{
+		{
+			name: "mention",
+			ev: &slackevents.MessageEvent{
+				User: "U1", Text: "<@UBOT> deploy it", Channel: "C1",
+				TimeStamp: "1", ChannelType: "channel",
+			},
+			wantAddress: true,
+		},
+		{
+			name: "room chatter",
+			ev: &slackevents.MessageEvent{
+				User: "U1", Text: "the bot did that yesterday", Channel: "C1",
+				TimeStamp: "1", ChannelType: "channel",
+			},
+		},
+		{
+			name: "someone else mentioned",
+			ev: &slackevents.MessageEvent{
+				User: "U1", Text: "<@U2> can you look", Channel: "C1",
+				TimeStamp: "1", ChannelType: "channel",
+			},
+		},
+		{
+			name: "a DM is addressed by construction",
+			ev: &slackevents.MessageEvent{
+				User: "U1", Text: "no mention needed here", Channel: "D1",
+				TimeStamp: "1", ChannelType: "im",
+			},
+			wantAddress: true,
+		},
+		{
+			// The caption of an upload lives on ev.Message, not ev.Text.
+			// Reading addressing before that fallback drops "@bot look at this"
+			// with a file attached.
+			name: "mention in an upload caption",
+			ev: &slackevents.MessageEvent{
+				User: "U1", Channel: "C1", TimeStamp: "1", SubType: "file_share",
+				ChannelType: "channel",
+				Message: &slack.Msg{
+					Text:  "<@UBOT> what is wrong with this",
+					Files: []slack.File{{Name: "x.log"}},
+				},
+			},
+			wantAddress: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Surface{selfID: "UBOT"}
+			h := &recordingHandler{}
+			s.handleEvent(context.Background(), h, event(tc.ev))
+			if len(h.messages) != 1 {
+				t.Fatalf("messages = %d, want 1", len(h.messages))
+			}
+			if got := h.messages[0].Addressed; got != tc.wantAddress {
+				t.Errorf("Addressed = %v, want %v", got, tc.wantAddress)
+			}
+		})
+	}
+}

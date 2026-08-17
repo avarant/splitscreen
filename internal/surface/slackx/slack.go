@@ -136,6 +136,10 @@ func (s *Surface) handleEvent(ctx context.Context, h surface.Handler, api slacke
 			in.Text = ev.Message.Text
 		}
 	}
+	// Computed after the text is final, because an upload carries its caption on
+	// ev.Message rather than ev.Text — reading it too early makes "@bot look at
+	// this" with a file attached indistinguishable from an unaddressed drop.
+	in.Addressed = in.IsDM || strings.Contains(in.Text, "<@"+s.selfID+">")
 	h.OnMessage(ctx, in)
 }
 

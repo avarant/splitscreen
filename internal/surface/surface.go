@@ -36,7 +36,16 @@ type Inbound struct {
 	User   User
 	Text   string
 	IsDM   bool
-	Files  []File
+	// Addressed reports that this message was aimed at the bot rather than at
+	// the room: an @-mention, or a DM, where the surface can tell. It gates
+	// starting a NEW conversation, so that a runner can live in a channel
+	// people also talk to each other in. Continuing an existing thread does not
+	// consult it — once a conversation is underway, replies are the reply.
+	//
+	// Surfaces with no notion of addressing leave this false and must instead
+	// be routed to a channel dedicated to the bot.
+	Addressed bool
+	Files     []File
 }
 
 // File is an attachment on an inbound message. Open is called at most once and
