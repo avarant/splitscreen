@@ -77,6 +77,9 @@ type SessionConfig struct {
 	// An allowlist built here cannot fail open the way filtering the parent's
 	// environment does every time a new variable appears.
 	Env []string
+	// Model is the model id to run, empty meaning the harness keeps its own
+	// default. Adapters that cannot select a model ignore it.
+	Model string
 	// ResumeID continues a previous session, transparently, after an idle kill.
 	ResumeID string
 	// MCPConfigPath is the assembled server set. Adapters should pass a strict

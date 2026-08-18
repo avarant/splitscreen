@@ -96,6 +96,7 @@ func (r *Runner) sessionFor(ctx context.Context, threadID string) (*threadSessio
 	env := r.buildEnv(configDir)
 	cfg := harness.SessionConfig{
 		Cwd:            r.opts.Cwd,
+		Model:          r.bundle.Model(),
 		ConfigDir:      configDir,
 		Env:            env,
 		ResumeID:       ts.sessionID,

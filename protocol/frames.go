@@ -668,6 +668,14 @@ type BundlePush struct {
 	Digest  string       `json:"digest"`
 	Files   []BundleFile `json:"files,omitempty"`
 	MCP     []MCPServer  `json:"mcp,omitempty"`
+	// Model is the harness model id, empty meaning the harness picks its own
+	// default. It rides the bundle rather than the welcome frame because it
+	// belongs to the same class as memory and skills — things that define how a
+	// session behaves — so changing it marks live sessions stale and the next
+	// one starts fresh. That is also the only correct way to change models:
+	// prompt caches are per-model, so switching mid-session would silently
+	// re-bill the whole conversation at cold-write rates.
+	Model string `json:"model,omitempty"`
 	// Secrets are resolved values for names referenced by files and MCP env.
 	// They exist only in the runner's memory and on tmpfs.
 	Secrets map[string]string `json:"secrets,omitempty"`

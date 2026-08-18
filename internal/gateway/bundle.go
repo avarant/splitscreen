@@ -38,7 +38,7 @@ func (g *Gateway) buildBundle(runner string) (*protocol.BundlePush, error) {
 		return nil, fmt.Errorf("gateway: runner %q is not configured", runner)
 	}
 
-	push := &protocol.BundlePush{}
+	push := &protocol.BundlePush{Model: rc.Model}
 
 	if rc.Bundle != "" {
 		resolved, err := cfg.ResolveBundle(rc.Bundle)

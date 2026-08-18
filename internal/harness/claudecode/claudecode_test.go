@@ -145,3 +145,52 @@ func TestAdapterIsRegistered(t *testing.T) {
 		t.Error("the adapter must name a credential variable")
 	}
 }
+
+// The model has to reach the CLI as a flag: nothing else sets it. The env is a
+// strict allowlist that drops ANTHROPIC_MODEL, and no settings.json is
+// materialized, so an unset model silently follows the CLI's own default.
+func TestModelIsPassedAsAFlag(t *testing.T) {
+	args := buildArgs(harness.SessionConfig{Cwd: "/w", Model: "claude-opus-5"})
+
+	idx := -1
+	for i, a := range args {
+		if a == "--model" {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		t.Fatalf("--model absent from args: %v", args)
+	}
+	if idx+1 >= len(args) || args[idx+1] != "claude-opus-5" {
+		t.Fatalf("--model not followed by the model id: %v", args)
+	}
+}
+
+// Empty means "keep the harness default" — passing an empty --model would be a
+// CLI error rather than a no-op.
+func TestNoModelMeansNoFlag(t *testing.T) {
+	for _, a := range buildArgs(harness.SessionConfig{Cwd: "/w"}) {
+		if a == "--model" {
+			t.Fatal("--model passed when no model was configured")
+		}
+	}
+}
+
+// A resumed session must still carry the model; an idle kill mid-conversation
+// is the most likely moment for it to get dropped.
+func TestResumeStillCarriesTheModel(t *testing.T) {
+	args := buildArgs(harness.SessionConfig{Cwd: "/w", Model: "claude-opus-5", ResumeID: "sess-1"})
+	var sawModel, sawResume bool
+	for _, a := range args {
+		switch a {
+		case "--model":
+			sawModel = true
+		case "--resume":
+			sawResume = true
+		}
+	}
+	if !sawModel || !sawResume {
+		t.Fatalf("model=%v resume=%v, want both: %v", sawModel, sawResume, args)
+	}
+}

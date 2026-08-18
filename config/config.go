@@ -83,13 +83,18 @@ func (d Display) EffectiveActivity() string {
 }
 
 type Runner struct {
-	Display Display  `yaml:"display"`
-	Host    string   `yaml:"host"`
-	Cwd     string   `yaml:"cwd"`
-	Harness string   `yaml:"harness"`
-	Bundle  string   `yaml:"bundle"`
-	Idle    Duration `yaml:"idle"`
-	Policy  Policy   `yaml:"policy"`
+	Display Display `yaml:"display"`
+	Host    string  `yaml:"host"`
+	Cwd     string  `yaml:"cwd"`
+	Harness string  `yaml:"harness"`
+	Bundle  string  `yaml:"bundle"`
+	// Model overrides the harness's own default model. Left empty, the harness
+	// chooses — which means the model silently follows whatever the agent CLI
+	// on the runner defaults to, and changes under you when that default moves.
+	// Set it to pin the model explicitly.
+	Model  string   `yaml:"model"`
+	Idle   Duration `yaml:"idle"`
+	Policy Policy   `yaml:"policy"`
 
 	// TokenSecret names the enrollment secret this runner authenticates with.
 	// Defaults to "runner-<name>".

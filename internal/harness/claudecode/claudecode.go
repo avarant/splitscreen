@@ -28,6 +28,36 @@ func (a *Adapter) Name() string { return "claude-code" }
 // overrides this with the OAuth token variable instead.
 func (a *Adapter) DefaultCredentialEnv() string { return "ANTHROPIC_API_KEY" }
 
+// buildArgs is separate from Start so the command line can be asserted without
+// executing anything: the flags below are the whole contract with the CLI.
+func buildArgs(cfg harness.SessionConfig) []string {
+	args := []string{
+		"-p",
+		"--input-format", "stream-json",
+		"--output-format", "stream-json",
+		"--verbose",
+	}
+	// Without this the model is whatever the CLI on the runner defaults to,
+	// which moves when that default moves. Empty stays unset rather than
+	// guessing an id, so the harness keeps its own default deliberately.
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
+	if cfg.MCPConfigPath != "" {
+		// Strict mode means the runner fully determines the tool surface and
+		// nothing leaks in from user or project scope. Deterministic beats
+		// convenient for a control plane.
+		args = append(args, "--mcp-config", cfg.MCPConfigPath, "--strict-mcp-config")
+	}
+	if cfg.PermissionTool != "" {
+		args = append(args, "--permission-prompt-tool", cfg.PermissionTool)
+	}
+	if cfg.ResumeID != "" {
+		args = append(args, "--resume", cfg.ResumeID)
+	}
+	return args
+}
+
 // PermissionToolName is the tool the CLI is told to call for every permission
 // decision. Routing prompts through a tool rather than a shell hook is both
 // supported and language-agnostic, and it is what lets the gateway be the
@@ -44,26 +74,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.SessionConfig) (harness
 		bin = "claude"
 	}
 
-	args := []string{
-		"-p",
-		"--input-format", "stream-json",
-		"--output-format", "stream-json",
-		"--verbose",
-	}
-	if cfg.MCPConfigPath != "" {
-		// Strict mode means the runner fully determines the tool surface and
-		// nothing leaks in from user or project scope. Deterministic beats
-		// convenient for a control plane.
-		args = append(args, "--mcp-config", cfg.MCPConfigPath, "--strict-mcp-config")
-	}
-	if cfg.PermissionTool != "" {
-		args = append(args, "--permission-prompt-tool", cfg.PermissionTool)
-	}
-	if cfg.ResumeID != "" {
-		args = append(args, "--resume", cfg.ResumeID)
-	}
-
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(bin, buildArgs(cfg)...)
 	cmd.Dir = cfg.Cwd
 	// Env is exactly what the caller built. Constructing it from scratch, rather
 	// than filtering the parent's, is what keeps a newly introduced variable
