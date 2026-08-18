@@ -1,5 +1,6 @@
 # Build artifacts
 /splitscreen
+/splitscreen-linux-*
 /dist/
 
 # Local config that may carry secrets
