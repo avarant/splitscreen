@@ -126,6 +126,11 @@ func (g *Gateway) buildBundle(runner string) (*protocol.BundlePush, error) {
 // show in status output.
 func digestBundle(b *protocol.BundlePush) string {
 	h := sha256.New()
+	// The model is part of the digest because the digest is what decides whether
+	// to push at all. Left out, changing the model in config would compute an
+	// unchanged digest, the push would be skipped as redundant, and the runner
+	// would keep running the old model with the config claiming otherwise.
+	fmt.Fprintf(h, "model:%s\x00", b.Model)
 	files := append([]protocol.BundleFile(nil), b.Files...)
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	for _, f := range files {
