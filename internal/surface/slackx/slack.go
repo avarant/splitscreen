@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -28,6 +29,11 @@ type Surface struct {
 	sock   *socketmode.Client
 	botID  string
 	selfID string
+	teamID string
+
+	// noStream latches when Slack says this app cannot stream, so the gateway
+	// stops paying a failed round trip per turn to rediscover it.
+	noStream atomic.Bool
 
 	mu     sync.RWMutex
 	closed bool
@@ -59,6 +65,10 @@ func (s *Surface) Start(ctx context.Context, h surface.Handler) error {
 	}
 	s.selfID = auth.UserID
 	s.botID = auth.BotID
+	// Streaming into a channel needs the recipient's team. For a Slack Connect
+	// guest this is their home team, not ours; using the bot's team is right
+	// for the single-workspace case and wrong nowhere it is currently used.
+	s.teamID = auth.TeamID
 
 	go s.pump(ctx, h)
 	return s.sock.RunContext(ctx)

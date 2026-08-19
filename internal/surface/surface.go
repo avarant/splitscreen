@@ -8,6 +8,7 @@ package surface
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/avarant/splitscreen/protocol"
 )
@@ -89,6 +90,60 @@ type Post struct {
 	// be noise in a shared thread.
 	Ephemeral bool
 	User      string
+}
+
+// StepStatus is where one step of a turn has got to.
+type StepStatus string
+
+const (
+	StepRunning StepStatus = "running"
+	StepDone    StepStatus = "done"
+	StepFailed  StepStatus = "failed"
+)
+
+// Step is one unit of work inside a turn — a tool call, almost always.
+//
+// This is deliberately not "a Slack task card". A surface that can render
+// progress natively shows steps as they change; one that cannot folds them into
+// text. The gateway describes what happened and never decides how it looks.
+type Step struct {
+	ID     string
+	Title  string
+	Detail string
+	Status StepStatus
+	// Output is filled on failure, and carries the error rather than the
+	// result: a successful tool's output is the harness's business.
+	Output  string
+	Elapsed time.Duration
+}
+
+// StreamUpdate is one increment of a turn: the prose written since the last
+// update, plus every step whose status changed. Sending deltas rather than the
+// whole message is what lets a surface append instead of rewrite.
+type StreamUpdate struct {
+	Text  string
+	Steps []Step
+}
+
+// Stream is a message built up as the turn runs.
+//
+// Append is called on the flush interval and Close exactly once. A Stream that
+// fails mid-turn is not resumable — the gateway falls back to post-and-edit for
+// the remainder rather than dropping output.
+type Stream interface {
+	Append(ctx context.Context, u StreamUpdate) error
+	Close(ctx context.Context, u StreamUpdate) error
+	Ref() Ref
+}
+
+// Streamer is implemented by surfaces with a native progressive-message API.
+//
+// It is optional on purpose: the gateway checks for it and falls back to
+// posting a message and editing it, which is what every surface can do. Post
+// carries the triggering user in User, because Slack requires a recipient when
+// streaming into a channel.
+type Streamer interface {
+	OpenStream(ctx context.Context, p Post) (Stream, error)
 }
 
 // Prompt is a permission request rendered as interactive controls.

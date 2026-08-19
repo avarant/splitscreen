@@ -28,9 +28,10 @@ type Gateway struct {
 	Slack Slack `yaml:"slack"`
 	Forge Forge `yaml:"forge"`
 
-	// StreamInterval is how often a streaming message is edited in place.
-	// Consolidating every runner onto one chat app means one rate-limit bucket,
-	// so this is a real control and not a cosmetic one.
+	// StreamInterval is how often a turn's output is pushed to the surface —
+	// appended to a native stream, or written over the message on the fallback
+	// path. Consolidating every runner onto one chat app means one rate-limit
+	// bucket, so this is a real control and not a cosmetic one.
 	StreamInterval Duration `yaml:"stream_interval"`
 
 	// Heartbeat is the ping period; a runner is degraded after two missed and
