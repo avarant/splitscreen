@@ -71,11 +71,10 @@ func (g *Gateway) onToolStart(fr *protocol.ToolStart) {
 	if err := g.store.IncrementToolCalls(fr.TurnID); err != nil {
 		g.log.Warn("tool count update failed", "turn", fr.TurnID, "err", err)
 	}
-	label := fr.Tool
-	if fr.Summary != "" {
-		label += ": " + truncateLine(fr.Summary, 120)
-	}
-	g.streamFor(turn).AppendActivity(label)
+	// Title and detail stay separate: a surface that renders steps natively
+	// shows the tool as the card's title and the arguments underneath, and one
+	// that cannot joins them back into a line.
+	g.streamFor(turn).StartStep(fr.CallID, fr.Tool, truncateLine(fr.Summary, 200))
 	_ = g.store.Log(store.Event{
 		Kind: "tool.start", Runner: turn.Runner, ThreadID: turn.ThreadID,
 		TurnID: fr.TurnID, SurfaceUser: turn.User.ID,
@@ -88,9 +87,7 @@ func (g *Gateway) onToolEnd(fr *protocol.ToolEnd) {
 	if !ok {
 		return
 	}
-	if !fr.OK {
-		g.streamFor(turn).AppendActivity("failed: " + truncateLine(fr.Error, 160))
-	}
+	g.streamFor(turn).EndStep(fr.CallID, fr.OK, truncateLine(fr.Error, 160), fr.DurationMS)
 	_ = g.store.Log(store.Event{
 		Kind: "tool.end", Runner: turn.Runner, ThreadID: turn.ThreadID,
 		TurnID: fr.TurnID,
@@ -144,7 +141,8 @@ func (g *Gateway) onPermissionRequest(ctx context.Context, c *Conn, fr *protocol
 				Kind: "permission.policy_denied", Runner: c.runner, ThreadID: turn.ThreadID,
 				TurnID: fr.TurnID, Detail: map[string]any{"tool": fr.Tool, "rule": rule},
 			})
-			g.streamFor(turn).AppendActivity("blocked by policy: " + fr.Tool + " (" + rule + ")")
+			g.streamFor(turn).NoteStep("policy_"+fr.RequestID,
+				"blocked by policy: "+fr.Tool+" ("+rule+")", true)
 			return
 		}
 	}

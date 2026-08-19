@@ -55,20 +55,27 @@ type Display struct {
 	Icon string `yaml:"icon"`
 	// ShowActivity controls whether tool invocations appear in the thread.
 	//
-	// A turn can run for minutes, and a thread showing nothing reads as broken —
-	// but once the answer lands, a list of shell commands is noise to anyone who
-	// does not know what a tool call is. "transient" resolves that: visible while
-	// the turn runs, removed when it finishes.
+	// On a surface that renders progress natively — Slack's streaming task
+	// cards — steps show as they run and collapse behind a disclosure when the
+	// turn ends, so only "hidden" changes anything: it suppresses them.
+	//
+	// The transient/full distinction still governs the fallback path, where the
+	// whole message is rewritten on every edit. There, a turn can run for
+	// minutes and a thread showing nothing reads as broken, but once the answer
+	// lands a list of shell commands is noise to anyone who does not know what a
+	// tool call is. "transient" resolves that: visible while the turn runs,
+	// removed when it finishes.
 	ShowActivity string `yaml:"show_activity"`
 }
 
 const (
 	// ActivityTransient shows tool lines while a turn runs, then strips them
-	// from the finished message. The default.
+	// from the finished message. The default, and the fallback path only:
+	// a native stream keeps its task cards, collapsed.
 	ActivityTransient = "transient"
-	// ActivityHidden never shows them.
+	// ActivityHidden never shows them, on either path.
 	ActivityHidden = "hidden"
-	// ActivityFull leaves them in the finished message.
+	// ActivityFull leaves them in the finished message. Fallback path only.
 	ActivityFull = "full"
 )
 

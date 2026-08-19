@@ -249,6 +249,35 @@ Accepted tradeoff: personas are cosmetic. There is one bot user, so you cannot
 explicit `dm:` route. Channel routing selects *which* runner answers; mentions are
 still what decides *whether* one does (§7.1).
 
+### 6.2 How a turn renders
+
+A turn is one message that grows. What the gateway sends is a stream of increments:
+prose written since the last push, plus every **step** whose status changed. A step is a
+unit of work — a tool call, almost always — with an id, a title, a detail, and a status
+of running, done, or failed. `tool.start` and `tool.end` already carry all of it; the
+gateway adds no frames.
+
+The gateway never decides how that looks. Surfaces take one of two paths:
+
+- **Native streaming.** A surface implementing `surface.Streamer` receives the deltas
+  and renders progress itself. Slack maps steps onto `chat.appendStream` task cards,
+  which show live status and collapse behind a disclosure when the turn ends. The reader
+  gets the answer, with the work behind a click.
+- **Post and edit.** Everything else gets one message rewritten on the flush interval,
+  with a tail of italic tool lines that are stripped when the answer lands.
+
+The fallback is not vestigial: it is what runs when a workspace has not enabled
+streaming, when the API refuses, and when a stream breaks mid-turn. The last case is the
+one worth stating — a broken stream leaves the half-written message alone and posts the
+answer fresh, because repeating some prose is a smaller failure than swallowing the
+answer.
+
+Two consequences of the native path. Steps are uncapped, since nothing is being
+rewritten: the 12-line tail is a message-length budget belonging to the fallback, not a
+judgement about how much detail is useful. And `show_activity: transient` versus `full`
+stops meaning anything, because the surface owns the collapse; only `hidden` still
+suppresses steps.
+
 ---
 
 ## 7. Sessions and threads

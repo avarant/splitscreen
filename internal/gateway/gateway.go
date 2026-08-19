@@ -42,8 +42,11 @@ type Gateway struct {
 	hub      *Hub
 
 	streams sync.Map // turn id -> *stream
-	prompts sync.Map // permission request id -> *pendingPrompt
-	turns   sync.Map // turn id -> *turnContext
+	// streamWarned keeps the "this surface cannot stream" notice to one line
+	// per process rather than one per turn.
+	streamWarned atomic.Bool
+	prompts      sync.Map // permission request id -> *pendingPrompt
+	turns        sync.Map // turn id -> *turnContext
 
 	bundlesMu sync.Mutex
 	bundles   map[string]bundleState // runner -> last pushed bundle
