@@ -266,6 +266,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			_ = r.send(ctx, &protocol.ToolEnd{
 				ThreadID: ts.threadID, TurnID: turn,
 				CallID: ev.CallID, OK: ev.OK, Error: ev.Error,
+				DurationMS: ev.DurationMS,
 			})
 
 		case harness.EventUsage:

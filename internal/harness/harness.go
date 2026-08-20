@@ -43,16 +43,19 @@ type Usage struct {
 
 // Event is one thing a harness said.
 type Event struct {
-	Kind      EventKind
-	Text      string
-	Tool      string
-	CallID    string
-	Summary   string
-	OK        bool
-	Error     string
-	SessionID string
-	Usage     Usage
-	ToolCalls int
+	Kind    EventKind
+	Text    string
+	Tool    string
+	CallID  string
+	Summary string
+	OK      bool
+	Error   string
+	// DurationMS is how long a tool call took, measured by the adapter between
+	// the call and its result.
+	DurationMS int64
+	SessionID  string
+	Usage      Usage
+	ToolCalls  int
 }
 
 // Image is an inline image passed to the harness.
