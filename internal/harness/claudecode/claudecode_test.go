@@ -194,3 +194,61 @@ func TestResumeStillCarriesTheModel(t *testing.T) {
 		t.Fatalf("model=%v resume=%v, want both: %v", sawModel, sawResume, args)
 	}
 }
+
+// A tool call that starts and never ends renders as a hung tool on any surface
+// that gives a tool call a lifecycle — a spinner that never resolves, or the
+// warning Slack draws on an unfinished task card. The CLI reports the result as
+// a user message, which the adapter must read.
+func TestToolResultsCloseTheCall(t *testing.T) {
+	s := newParser(t, strings.Join([]string{
+		`{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"df -h /"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Filesystem  Size","is_error":false}]}}`,
+	}, "\n"))
+
+	var start, end *harness.Event
+	for ev := range s.Events() {
+		switch ev.Kind {
+		case harness.EventToolUse:
+			e := ev
+			start = &e
+		case harness.EventToolEnd:
+			e := ev
+			end = &e
+		}
+	}
+	if start == nil {
+		t.Fatal("no tool_use event")
+	}
+	if end == nil {
+		t.Fatal("the tool call never ended: no tool_end event")
+	}
+	if end.CallID != start.CallID {
+		t.Fatalf("result landed on the wrong call: %q vs %q", end.CallID, start.CallID)
+	}
+	if !end.OK {
+		t.Fatal("a successful tool reported as failed")
+	}
+}
+
+// A failing tool has to carry its reason, and the reason has to survive both
+// result shapes: a bare string, and the block array image-capable tools return.
+func TestFailedToolResultCarriesItsReason(t *testing.T) {
+	s := newParser(t, strings.Join([]string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"/etc/shadow"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":[{"type":"text","text":"EACCES: permission denied"}],"is_error":true}]}}`,
+	}, "\n"))
+
+	for ev := range s.Events() {
+		if ev.Kind != harness.EventToolEnd {
+			continue
+		}
+		if ev.OK {
+			t.Fatal("a failed tool reported as OK")
+		}
+		if !strings.Contains(ev.Error, "permission denied") {
+			t.Fatalf("the reason was lost: %q", ev.Error)
+		}
+		return
+	}
+	t.Fatal("no tool_end event for the failed call")
+}

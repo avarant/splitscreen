@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/avarant/splitscreen/internal/harness"
 )
@@ -121,6 +122,11 @@ type session struct {
 	running atomic.Bool
 	closed  sync.Once
 	toolN   atomic.Int64
+
+	// callStart is when each tool call was announced, so its result can carry a
+	// duration. Keyed by tool_use id; entries are removed when the result
+	// arrives, and a turn that dies mid-call simply leaves one behind.
+	callStart sync.Map
 }
 
 func (s *session) Events() <-chan harness.Event { return s.events }
@@ -250,6 +256,54 @@ type assistantMessage struct {
 	Usage *rawUsage `json:"usage"`
 }
 
+// userMessage carries tool results back from the CLI. The role is "user"
+// because the harness models a tool result as something handed to the model,
+// not as something the model said.
+type userMessage struct {
+	Content []struct {
+		Type      string          `json:"type"`
+		ToolUseID string          `json:"tool_use_id"`
+		IsError   bool            `json:"is_error"`
+		Content   json.RawMessage `json:"content"`
+	} `json:"content"`
+}
+
+// resultText pulls readable text out of a tool result, which is a bare string
+// for most tools and a block array for the ones that can return images.
+func resultText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return truncateResult(text)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var parts []string
+		for _, b := range blocks {
+			if b.Text != "" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return truncateResult(strings.Join(parts, " "))
+	}
+	return ""
+}
+
+// truncateResult bounds an error before it crosses the wire. A failing tool can
+// return a great deal of output and none of it belongs in a chat message.
+func truncateResult(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= 400 {
+		return s
+	}
+	return s[:400] + "…"
+}
+
 func (s *session) readStdout(r io.Reader) {
 	defer close(s.events)
 	defer s.running.Store(false)
@@ -298,6 +352,7 @@ func (s *session) readStdout(r io.Reader) {
 					}
 				case "tool_use":
 					s.toolN.Add(1)
+					s.callStart.Store(block.ID, time.Now())
 					s.emit(harness.Event{
 						Kind:    harness.EventToolUse,
 						Tool:    block.Name,
@@ -305,6 +360,33 @@ func (s *session) readStdout(r io.Reader) {
 						Summary: summarize(block.Input),
 					})
 				}
+			}
+
+		case "user":
+			// A tool's result comes back as a user message carrying
+			// tool_result blocks. Without this the CLI reports every call
+			// starting and none finishing, which reads as a hung tool on any
+			// surface that renders a tool call as something with a lifecycle.
+			var msg userMessage
+			if err := json.Unmarshal(ev.Message, &msg); err != nil {
+				continue
+			}
+			for _, block := range msg.Content {
+				if block.Type != "tool_result" || block.ToolUseID == "" {
+					continue
+				}
+				out := harness.Event{
+					Kind:   harness.EventToolEnd,
+					CallID: block.ToolUseID,
+					OK:     !block.IsError,
+				}
+				if block.IsError {
+					out.Error = resultText(block.Content)
+				}
+				if started, ok := s.callStart.LoadAndDelete(block.ToolUseID); ok {
+					out.DurationMS = time.Since(started.(time.Time)).Milliseconds()
+				}
+				s.emit(out)
 			}
 
 		case "result":
